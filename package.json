@@ -1,5 +1,5 @@
 {
-  "name": "minimal-wa-bot",
+  "name": "knight-bot",
   "version": "1.0.0",
   "main": "bot.js",
   "scripts": {
@@ -7,5 +7,9 @@
   },
   "dependencies": {
     "@whiskeysockets/baileys": "^6.7.18"
+  },
+  "engines": {
+    "node": "18.x",
+    "npm": "8.x"
   }
 }
