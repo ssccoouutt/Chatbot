@@ -4,13 +4,12 @@
   "main": "bot.js",
   "scripts": {
     "start": "node bot.js",
-    "preinstall": "npm install --package-lock-only --ignore-scripts"
+    "preinstall": "exit 0"
   },
   "dependencies": {
     "@whiskeysockets/baileys": "^6.7.18"
   },
   "engines": {
-    "node": "18.x",
-    "npm": "8.x"
+    "node": "18.x"
   }
 }
