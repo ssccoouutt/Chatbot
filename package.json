@@ -1,15 +1,15 @@
 {
-  "name": "knight-bot",
+  "name": "simple-whatsapp-bot",
   "version": "1.0.0",
+  "description": "A simple WhatsApp bot that replies to 'hi'",
   "main": "bot.js",
   "scripts": {
-    "start": "node bot.js",
-    "preinstall": "exit 0"
+    "start": "node bot.js"
   },
   "dependencies": {
-    "@whiskeysockets/baileys": "^6.7.18"
-  },
-  "engines": {
-    "node": "18.x"
+    "@whiskeysockets/baileys": "^6.6.0",
+    "@hapi/boom": "^10.0.1",
+    "pino": "^8.14.1",
+    "qrcode-terminal": "^0.12.0"
   }
 }
