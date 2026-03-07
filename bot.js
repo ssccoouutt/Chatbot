@@ -32,12 +32,16 @@ async function startBot() {
     const { state, saveCreds } = await useMultiFileAuthState("session");
     const { version, isLatest } = await fetchLatestBaileysVersion();
 
+    const store = makeInMemoryStore({ logger: pino().child({ level: 'silent', stream: 'store' }) });
+
     const sock = makeWASocket({
         version,
         logger: pino({ level: "silent" }),
         printQRInTerminal: true,
         auth: state,
     });
+
+    store.bind(sock.ev);
 
     sock.ev.on("connection.update", (update) => {
         const { connection, lastDisconnect, qr } = update;
