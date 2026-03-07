@@ -8,10 +8,10 @@ const {
     generateWAMessageFromContent,
     generateWAMessageID,
     downloadContentFromMessage,
-    makeInMemoryStore,
     jidDecode,
     proto
 } = require("@whiskeysockets/baileys");
+const { makeInMemoryStore } = require("@whiskeysockets/baileys/lib/Store");
 const pino = require("pino");
 const { Boom } = require("@hapi/boom");
 const qrcode = require("qrcode-terminal");
