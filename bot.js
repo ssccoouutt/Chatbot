@@ -67,7 +67,7 @@ async function startBot() {
 
         // Handle "hi" command
         if (text.toLowerCase() === "hi") {
-            await sock.sendMessage(from, { text: "hlw are you" }, { quoted: msg });
+            await sock.sendMessage(from, { text: "how are you?" }, { quoted: msg });
         } 
         // Handle "king" command
         else if (text.toLowerCase() === "king") {
