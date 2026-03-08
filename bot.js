@@ -3,15 +3,23 @@ const {
     useMultiFileAuthState,
     DisconnectReason,
     fetchLatestBaileysVersion,
-    makeInMemoryStore,
+    generateForwardMessageContent,
+    prepareWAMessageMedia,
+    generateWAMessageFromContent,
+    generateWAMessageID,
+    downloadContentFromMessage,
     jidDecode,
     proto
 } = require("@whiskeysockets/baileys");
+const { makeInMemoryStore } = require("@whiskeysockets/baileys/lib/Store");
 const pino = require("pino");
 const { Boom } = require("@hapi/boom");
 const qrcode = require("qrcode-terminal");
 const axios = require("axios");
 const path = require("path");
+const fs = require("fs");
+const { promisify } = require("util");
+const pipeline = promisify(require("stream").pipeline);
 
 /**
  * Function to check if a string is a valid URL
@@ -24,7 +32,6 @@ async function startBot() {
     const { state, saveCreds } = await useMultiFileAuthState("session");
     const { version, isLatest } = await fetchLatestBaileysVersion();
 
-    // Create a message store to handle encryption keys and message states
     const store = makeInMemoryStore({ logger: pino().child({ level: 'silent', stream: 'store' }) });
 
     const sock = makeWASocket({
@@ -34,7 +41,6 @@ async function startBot() {
         auth: state,
     });
 
-    // Bind the store to the socket events
     store.bind(sock.ev);
 
     sock.ev.on("connection.update", (update) => {
