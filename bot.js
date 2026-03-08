@@ -8,18 +8,15 @@ const {
     generateWAMessageFromContent,
     generateWAMessageID,
     downloadContentFromMessage,
+    makeInMemoryStore,
     jidDecode,
     proto
 } = require("@whiskeysockets/baileys");
-const { makeInMemoryStore } = require("@whiskeysockets/baileys/lib/Store");
 const pino = require("pino");
 const { Boom } = require("@hapi/boom");
 const qrcode = require("qrcode-terminal");
 const axios = require("axios");
 const path = require("path");
-const fs = require("fs");
-const { promisify } = require("util");
-const pipeline = promisify(require("stream").pipeline);
 
 /**
  * Function to check if a string is a valid URL
@@ -32,16 +29,12 @@ async function startBot() {
     const { state, saveCreds } = await useMultiFileAuthState("session");
     const { version, isLatest } = await fetchLatestBaileysVersion();
 
-    const store = makeInMemoryStore({ logger: pino().child({ level: 'silent', stream: 'store' }) });
-
     const sock = makeWASocket({
         version,
         logger: pino({ level: "silent" }),
         printQRInTerminal: true,
         auth: state,
     });
-
-    store.bind(sock.ev);
 
     sock.ev.on("connection.update", (update) => {
         const { connection, lastDisconnect, qr } = update;
@@ -88,41 +81,34 @@ async function startBot() {
         else if (isUrl(text)) {
             const url = text.trim();
             try {
-                await sock.sendMessage(from, { text: "Detecting direct link..." }, { quoted: msg });
+                // Inform user that the bot is processing the link
+                await sock.sendMessage(from, { text: "Detecting direct link... Downloading file, please wait." }, { quoted: msg });
 
-                const headResponse = await axios.head(url, { timeout: 10000 });
-                const contentType = headResponse.headers['content-type'] || 'application/octet-stream';
-                const contentLength = parseInt(headResponse.headers['content-length'], 10);
-                const isMedia = contentType.startsWith('image/') || contentType.startsWith('video/');
-                const isUnder100MB = contentLength && contentLength <= 100 * 1024 * 1024; // 100 MB
-
+                // Fetch headers to get filename and mimetype
+                const response = await axios.head(url, { timeout: 10000 });
+                const contentType = response.headers['content-type'] || 'application/octet-stream';
+                
+                // Try to extract filename from content-disposition or URL
                 let fileName = 'file';
-                const contentDisposition = headResponse.headers['content-disposition'];
+                const contentDisposition = response.headers['content-disposition'];
                 if (contentDisposition && contentDisposition.includes('filename=')) {
                     fileName = contentDisposition.split('filename=')[1].split(';')[0].replace(/"/g, '').trim();
                 } else {
                     fileName = path.basename(new URL(url).pathname) || 'file';
                 }
 
-                if (isMedia && isUnder100MB) {
-                    await sock.sendMessage(from, { text: "Downloading media, please wait." }, { quoted: msg });
-                    if (contentType.startsWith('image/')) {
-                        await sock.sendMessage(from, { image: { url: url }, caption: fileName }, { quoted: msg });
-                    } else if (contentType.startsWith('video/')) {
-                        await sock.sendMessage(from, { video: { url: url }, caption: fileName }, { quoted: msg });
-                    }
-                } else {
-                    await sock.sendMessage(from, { text: "Downloading document, please wait." }, { quoted: msg });
-                    await sock.sendMessage(from, {
-                        document: { url: url },
-                        mimetype: contentType,
-                        fileName: fileName
-                    }, { quoted: msg });
-                }
+                // Send the file as a document
+                await sock.sendMessage(from, {
+                    document: { url: url },
+                    mimetype: contentType,
+                    fileName: fileName
+                }, { quoted: msg });
 
             } catch (error) {
-                console.error("Error processing file from URL:", error);
-                await sock.sendMessage(from, { text: "Failed to process the link. Make sure it's a direct download link and accessible." }, { quoted: msg });
+                console.error("Error downloading file:", error);
+                // If it's not a direct download link or error occurs, we don't necessarily need to spam the user
+                // but for this specific request, we can notify them if the link failed.
+                // await sock.sendMessage(from, { text: "Failed to download from the link. Make sure it's a direct download link." }, { quoted: msg });
             }
         }
     });
