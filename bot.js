@@ -47,10 +47,10 @@ async function startBot() {
         } else if (connection === "open") {
             console.log("✅ Bot connected!");
             console.log(`📢 Channel ID: ${TEST_CHANNEL}`);
-            console.log("\n📋 MANUAL TEST COMMANDS:");
-            console.log("  • .test1 - Send test image directly");
+            console.log("\n📋 Commands (send these in PRIVATE CHAT with bot):");
+            console.log("  • .test1 - Send test image directly to channel");
             console.log("  • .test2 - Reply to an image with .test2");
-            console.log("  • .channel text - Send text");
+            console.log("  • .channel text - Send text to channel");
         }
     });
 
@@ -61,11 +61,26 @@ async function startBot() {
         if (!msg.message || msg.key.fromMe) return;
 
         const from = msg.key.remoteJid;
-        const messageType = Object.keys(msg.message)[0];
-        const text = messageType === "conversation" ? msg.message.conversation :
-                     messageType === "extendedTextMessage" ? msg.message.extendedTextMessage.text : "";
+        
+        // ===== IMPORTANT: Check if it's a private chat =====
+        const isPrivate = !from.endsWith('@g.us');
+        if (!isPrivate) {
+            // Ignore group messages
+            return;
+        }
+        
+        // Get message text
+        let text = '';
+        if (msg.message.conversation) {
+            text = msg.message.conversation;
+        } else if (msg.message.extendedTextMessage) {
+            text = msg.message.extendedTextMessage.text;
+        } else {
+            // Not a text message
+            return;
+        }
 
-        if (!text) return;
+        log('INFO', `📨 Message from ${from}: ${text}`);
 
         // ===== TEST 1: Direct image send (no reply) =====
         if (text === '.test1') {
@@ -127,8 +142,8 @@ async function startBot() {
         }
         
         // ===== Channel text command =====
-        else if (text.startsWith('.channel')) {
-            const args = text.slice(8).trim();
+        else if (text.startsWith('.channel ')) {
+            const args = text.slice(9).trim(); // Remove '.channel ' (9 chars)
             
             if (!args) {
                 await sock.sendMessage(from, { text: '❌ Usage: .channel your message' });
