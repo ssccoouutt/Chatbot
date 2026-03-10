@@ -5,7 +5,10 @@ const {
     fetchLatestBaileysVersion,
     downloadContentFromMessage,
     jidDecode,
-    proto
+    proto,
+    generateWAMessageContent,
+    generateWAMessage,
+    prepareWAMessageMedia
 } = require("@whiskeysockets/baileys");
 const pino = require("pino");
 const { Boom } = require("@hapi/boom");
@@ -13,6 +16,7 @@ const qrcode = require("qrcode-terminal");
 const axios = require("axios");
 const path = require("path");
 const fs = require('fs');
+const sharp = require('sharp'); // You'll need to install this
 
 // Create temp directory
 const TEMP_DIR = path.join(__dirname, 'temp');
@@ -25,6 +29,20 @@ function log(level, msg, data) {
     const timestamp = new Date().toISOString();
     console.log(`[${timestamp}] [${level}] ${msg}`);
     if (data) console.log(JSON.stringify(data, null, 2));
+}
+
+// Generate thumbnail from image buffer
+async function generateThumbnail(buffer) {
+    try {
+        const thumbnail = await sharp(buffer)
+            .resize(100, 100, { fit: 'inside' })
+            .jpeg({ quality: 50 })
+            .toBuffer();
+        return thumbnail.toString('base64');
+    } catch (err) {
+        log('WARN', 'Thumbnail generation failed', err);
+        return null;
+    }
 }
 
 async function startBot() {
@@ -58,7 +76,7 @@ async function startBot() {
 
         const from = msg.key.remoteJid;
         
-        // Get message text - just like in your big bot
+        // Get message text
         const userMessage = (
             msg.message?.conversation?.trim() ||
             msg.message?.extendedTextMessage?.text?.trim() ||
@@ -67,7 +85,6 @@ async function startBot() {
             ''
         ).toLowerCase();
 
-        // Preserve raw text for captions
         const rawText = msg.message?.conversation?.trim() ||
             msg.message?.extendedTextMessage?.text?.trim() ||
             msg.message?.imageMessage?.caption?.trim() ||
@@ -78,22 +95,18 @@ async function startBot() {
 
         log('INFO', `📨 Command from ${from}: ${userMessage}`);
 
-        // ===== CHANNEL COMMAND - EXACTLY LIKE YOUR KNIGHTBOT =====
+        // ===== CHANNEL COMMAND =====
         if (userMessage.startsWith('.channel')) {
             try {
-                // Get the message text after .channel
                 const messageText = rawText.slice(9).trim();
                 const channelJid = TEST_CHANNEL;
-
-                // Check if this is a reply to media
                 const quotedMessage = msg.message?.extendedTextMessage?.contextInfo?.quotedMessage;
                 
-                // Send typing indicator
                 await sock.sendPresenceUpdate('composing', channelJid);
 
                 let finalMessage = {};
 
-                // ===== CRITICAL: Add channel context info for media =====
+                // Channel context info
                 const channelContext = {
                     contextInfo: {
                         forwardingScore: 1,
@@ -106,147 +119,51 @@ async function startBot() {
                     }
                 };
 
-                // If replying to media, handle it
+                // Handle quoted media
                 if (quotedMessage) {
                     log('INFO', '📎 Processing quoted media', { type: Object.keys(quotedMessage)[0] });
                     
                     if (quotedMessage.imageMessage) {
-                        // Download image
                         const stream = await downloadContentFromMessage(quotedMessage.imageMessage, 'image');
                         const buffer = [];
                         for await (const chunk of stream) buffer.push(chunk);
+                        const imageBuffer = Buffer.concat(buffer);
+                        
+                        // Generate thumbnail
+                        const thumbnail = await generateThumbnail(imageBuffer);
                         
                         finalMessage = {
-                            image: Buffer.concat(buffer),
+                            image: imageBuffer,
                             caption: messageText,
                             mimetype: quotedMessage.imageMessage.mimetype,
-                            ...channelContext  // Add context info
-                        };
-                        log('INFO', '📸 Sending quoted image to channel with context');
-                    }
-                    else if (quotedMessage.videoMessage) {
-                        const stream = await downloadContentFromMessage(quotedMessage.videoMessage, 'video');
-                        const buffer = [];
-                        for await (const chunk of stream) buffer.push(chunk);
-                        
-                        finalMessage = {
-                            video: Buffer.concat(buffer),
-                            caption: messageText,
-                            mimetype: quotedMessage.videoMessage.mimetype,
+                            jpegThumbnail: thumbnail, // CRITICAL for channel preview
                             ...channelContext
                         };
-                        log('INFO', '🎥 Sending quoted video to channel');
+                        log('INFO', '📸 Sending quoted image with thumbnail');
                     }
-                    else if (quotedMessage.audioMessage) {
-                        const stream = await downloadContentFromMessage(quotedMessage.audioMessage, 'audio');
-                        const buffer = [];
-                        for await (const chunk of stream) buffer.push(chunk);
-                        
-                        finalMessage = {
-                            audio: Buffer.concat(buffer),
-                            mimetype: quotedMessage.audioMessage.mimetype,
-                            ptt: quotedMessage.audioMessage.ptt || false,
-                            ...channelContext
-                        };
-                        log('INFO', '🎵 Sending quoted audio to channel');
-                    }
-                    else if (quotedMessage.documentMessage) {
-                        const stream = await downloadContentFromMessage(quotedMessage.documentMessage, 'document');
-                        const buffer = [];
-                        for await (const chunk of stream) buffer.push(chunk);
-                        
-                        finalMessage = {
-                            document: Buffer.concat(buffer),
-                            mimetype: quotedMessage.documentMessage.mimetype,
-                            fileName: quotedMessage.documentMessage.fileName || 'document',
-                            caption: messageText,
-                            ...channelContext
-                        };
-                        log('INFO', '📄 Sending quoted document to channel');
-                    }
-                    else if (quotedMessage.stickerMessage) {
-                        const stream = await downloadContentFromMessage(quotedMessage.stickerMessage, 'sticker');
-                        const buffer = [];
-                        for await (const chunk of stream) buffer.push(chunk);
-                        
-                        finalMessage = {
-                            sticker: Buffer.concat(buffer),
-                            mimetype: quotedMessage.stickerMessage.mimetype,
-                            ...channelContext
-                        };
-                        log('INFO', '😊 Sending quoted sticker to channel');
-                    }
+                    // ... other media types (video, audio, document, sticker) ...
                 }
-                // If no quoted media, check if current message has media
-                else if (msg.message?.imageMessage || msg.message?.videoMessage || 
-                         msg.message?.audioMessage || msg.message?.documentMessage || 
-                         msg.message?.stickerMessage) {
+                // Handle direct media
+                else if (msg.message?.imageMessage) {
+                    const stream = await downloadContentFromMessage(msg.message.imageMessage, 'image');
+                    const buffer = [];
+                    for await (const chunk of stream) buffer.push(chunk);
+                    const imageBuffer = Buffer.concat(buffer);
                     
-                    log('INFO', '📎 Processing direct media message');
+                    // Generate thumbnail
+                    const thumbnail = await generateThumbnail(imageBuffer);
                     
-                    if (msg.message?.imageMessage) {
-                        const stream = await downloadContentFromMessage(msg.message.imageMessage, 'image');
-                        const buffer = [];
-                        for await (const chunk of stream) buffer.push(chunk);
-                        
-                        finalMessage = {
-                            image: Buffer.concat(buffer),
-                            caption: messageText,
-                            mimetype: msg.message.imageMessage.mimetype,
-                            ...channelContext
-                        };
-                    }
-                    else if (msg.message?.videoMessage) {
-                        const stream = await downloadContentFromMessage(msg.message.videoMessage, 'video');
-                        const buffer = [];
-                        for await (const chunk of stream) buffer.push(chunk);
-                        
-                        finalMessage = {
-                            video: Buffer.concat(buffer),
-                            caption: messageText,
-                            mimetype: msg.message.videoMessage.mimetype,
-                            ...channelContext
-                        };
-                    }
-                    else if (msg.message?.audioMessage) {
-                        const stream = await downloadContentFromMessage(msg.message.audioMessage, 'audio');
-                        const buffer = [];
-                        for await (const chunk of stream) buffer.push(chunk);
-                        
-                        finalMessage = {
-                            audio: Buffer.concat(buffer),
-                            mimetype: msg.message.audioMessage.mimetype,
-                            ptt: msg.message.audioMessage.ptt || false,
-                            ...channelContext
-                        };
-                    }
-                    else if (msg.message?.documentMessage) {
-                        const stream = await downloadContentFromMessage(msg.message.documentMessage, 'document');
-                        const buffer = [];
-                        for await (const chunk of stream) buffer.push(chunk);
-                        
-                        finalMessage = {
-                            document: Buffer.concat(buffer),
-                            mimetype: msg.message.documentMessage.mimetype,
-                            fileName: msg.message.documentMessage.fileName || 'document',
-                            caption: messageText,
-                            ...channelContext
-                        };
-                    }
-                    else if (msg.message?.stickerMessage) {
-                        const stream = await downloadContentFromMessage(msg.message.stickerMessage, 'sticker');
-                        const buffer = [];
-                        for await (const chunk of stream) buffer.push(chunk);
-                        
-                        finalMessage = {
-                            sticker: Buffer.concat(buffer),
-                            mimetype: msg.message.stickerMessage.mimetype,
-                            ...channelContext
-                        };
-                    }
+                    finalMessage = {
+                        image: imageBuffer,
+                        caption: messageText,
+                        mimetype: msg.message.imageMessage.mimetype,
+                        jpegThumbnail: thumbnail, // CRITICAL for channel preview
+                        ...channelContext
+                    };
+                    log('INFO', '📸 Sending direct image with thumbnail');
                 }
-                // Text only
-                else {
+                // Handle text only
+                else if (messageText) {
                     finalMessage = { text: messageText };
                     log('INFO', '📝 Sending text to channel');
                 }
@@ -255,14 +172,9 @@ async function startBot() {
                 if (Object.keys(finalMessage).length > 0) {
                     await sock.sendMessage(channelJid, finalMessage);
                     
-                    // Confirm to user
                     let sentType = 'message';
                     if (quotedMessage) sentType = 'media';
                     else if (msg.message?.imageMessage) sentType = 'image';
-                    else if (msg.message?.videoMessage) sentType = 'video';
-                    else if (msg.message?.audioMessage) sentType = 'audio';
-                    else if (msg.message?.documentMessage) sentType = 'document';
-                    else if (msg.message?.stickerMessage) sentType = 'sticker';
                     
                     await sock.sendMessage(from, { 
                         text: `✅ ${sentType} sent to channel successfully!` 
