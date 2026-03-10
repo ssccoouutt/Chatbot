@@ -1,7 +1,7 @@
 {
   "name": "simple-whatsapp-bot",
   "version": "1.0.0",
-  "description": "A simple WhatsApp bot that replies to 'hi' and downloads files from direct links.",
+  "description": "Test bot for channel media upload",
   "main": "bot.js",
   "scripts": {
     "start": "node bot.js"
