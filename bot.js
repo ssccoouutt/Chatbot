@@ -3,12 +3,7 @@ const {
     useMultiFileAuthState,
     DisconnectReason,
     fetchLatestBaileysVersion,
-    generateForwardMessageContent,
-    prepareWAMessageMedia,
-    generateWAMessageFromContent,
-    generateWAMessageID,
     downloadContentFromMessage,
-    makeInMemoryStore,
     jidDecode,
     proto
 } = require("@whiskeysockets/baileys");
@@ -17,17 +12,24 @@ const { Boom } = require("@hapi/boom");
 const qrcode = require("qrcode-terminal");
 const axios = require("axios");
 const path = require("path");
+const fs = require('fs');
 
-/**
- * Function to check if a string is a valid URL
- */
-function isUrl(url) {
-    return url.match(new RegExp(/https?:\/\/(www\.)?[-a-zA-Z0-9@:%._+~#=]{1,256}\.[a-zA-Z0-9()]{1,6}\b([-a-zA-Z0-9()@:%_+.~#?&/=]*)/, 'gi'));
+// Create temp directory
+const TEMP_DIR = path.join(__dirname, 'temp');
+if (!fs.existsSync(TEMP_DIR)) fs.mkdirSync(TEMP_DIR);
+
+// Channel ID to test
+const TEST_CHANNEL = "120363405181626845@newsletter";
+
+function log(level, msg, data) {
+    const timestamp = new Date().toISOString();
+    console.log(`[${timestamp}] [${level}] ${msg}`);
+    if (data) console.log(JSON.stringify(data, null, 2));
 }
 
 async function startBot() {
     const { state, saveCreds } = await useMultiFileAuthState("session");
-    const { version, isLatest } = await fetchLatestBaileysVersion();
+    const { version } = await fetchLatestBaileysVersion();
 
     const sock = makeWASocket({
         version,
@@ -38,22 +40,21 @@ async function startBot() {
 
     sock.ev.on("connection.update", (update) => {
         const { connection, lastDisconnect, qr } = update;
-        if (qr) {
-            qrcode.generate(qr, { small: true });
-        }
+        if (qr) qrcode.generate(qr, { small: true });
         if (connection === "close") {
             const shouldReconnect = (lastDisconnect.error instanceof Boom)?.output?.statusCode !== DisconnectReason.loggedOut;
-            console.log("Connection closed due to ", lastDisconnect.error, ", reconnecting ", shouldReconnect);
-            if (shouldReconnect) {
-                startBot();
-            }
+            if (shouldReconnect) startBot();
         } else if (connection === "open") {
-            console.log("Opened connection");
+            console.log("✅ Bot connected!");
+            
+            // Send test messages when bot connects
+            setTimeout(() => testChannel(sock), 5000);
         }
     });
 
     sock.ev.on("creds.update", saveCreds);
 
+    // Handle commands
     sock.ev.on("messages.upsert", async (m) => {
         const msg = m.messages[0];
         if (!msg.message || msg.key.fromMe) return;
@@ -65,53 +66,94 @@ async function startBot() {
 
         if (!text) return;
 
-        // Handle "hi" command
-        if (text.toLowerCase() === "hi") {
-            await sock.sendMessage(from, { text: "how are you?" }, { quoted: msg });
-        } 
-        // Handle "king" command
-        else if (text.toLowerCase() === "king") {
-            await sock.sendMessage(from, { 
-                document: { url: './dummy.txt' }, 
-                mimetype: 'text/plain', 
-                fileName: 'dummy.txt' 
-            }, { quoted: msg });
-        }
-        // Handle direct download links
-        else if (isUrl(text)) {
-            const url = text.trim();
-            try {
-                // Inform user that the bot is processing the link
-                await sock.sendMessage(from, { text: "Detecting direct link... Downloading file, please wait." }, { quoted: msg });
-
-                // Fetch headers to get filename and mimetype
-                const response = await axios.head(url, { timeout: 10000 });
-                const contentType = response.headers['content-type'] || 'application/octet-stream';
+        // Test command: .channel
+        if (text.startsWith('.channel')) {
+            const args = text.slice(8).trim();
+            
+            // Check if replying to media
+            const quotedMsg = msg.message?.extendedTextMessage?.contextInfo?.quotedMessage;
+            
+            if (quotedMsg?.imageMessage) {
+                log('INFO', '📸 Testing quoted image to channel');
                 
-                // Try to extract filename from content-disposition or URL
-                let fileName = 'file';
-                const contentDisposition = response.headers['content-disposition'];
-                if (contentDisposition && contentDisposition.includes('filename=')) {
-                    fileName = contentDisposition.split('filename=')[1].split(';')[0].replace(/"/g, '').trim();
-                } else {
-                    fileName = path.basename(new URL(url).pathname) || 'file';
+                try {
+                    // Download the image
+                    const stream = await downloadContentFromMessage(quotedMsg.imageMessage, 'image');
+                    const buffer = [];
+                    for await (const chunk of stream) buffer.push(chunk);
+                    const imageBuffer = Buffer.concat(buffer);
+                    
+                    log('INFO', 'Image downloaded', { size: imageBuffer.length });
+                    
+                    // Send to channel
+                    const result = await sock.sendMessage(TEST_CHANNEL, {
+                        image: imageBuffer,
+                        caption: args || 'Test image from bot'
+                    });
+                    
+                    log('INFO', 'Send result', result);
+                    await sock.sendMessage(from, { text: '✅ Test image sent to channel' });
+                    
+                } catch (err) {
+                    log('ERROR', 'Failed', err);
                 }
-
-                // Send the file as a document
-                await sock.sendMessage(from, {
-                    document: { url: url },
-                    mimetype: contentType,
-                    fileName: fileName
-                }, { quoted: msg });
-
-            } catch (error) {
-                console.error("Error downloading file:", error);
-                // If it's not a direct download link or error occurs, we don't necessarily need to spam the user
-                // but for this specific request, we can notify them if the link failed.
-                // await sock.sendMessage(from, { text: "Failed to download from the link. Make sure it's a direct download link." }, { quoted: msg });
+            } else if (text) {
+                // Send text only
+                const result = await sock.sendMessage(TEST_CHANNEL, { text: args });
+                log('INFO', 'Text sent', result);
+                await sock.sendMessage(from, { text: '✅ Test text sent to channel' });
+            }
+        }
+        
+        // Test command: .test (sends a 1x1 pixel test image)
+        else if (text === '.test') {
+            // Create a tiny test image (1x1 pixel transparent PNG)
+            const tinyImage = Buffer.from(
+                'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==',
+                'base64'
+            );
+            
+            try {
+                const result = await sock.sendMessage(TEST_CHANNEL, {
+                    image: tinyImage,
+                    caption: 'Tiny test image'
+                });
+                log('INFO', 'Test image sent', result);
+                await sock.sendMessage(from, { text: '✅ Tiny test image sent to channel' });
+            } catch (err) {
+                log('ERROR', 'Test failed', err);
             }
         }
     });
+}
+
+async function testChannel(sock) {
+    log('INFO', 'Running automated channel tests...');
+    
+    // Test 1: Send simple text
+    try {
+        const textResult = await sock.sendMessage(TEST_CHANNEL, { text: 'Test 1: Text works ✅' });
+        log('INFO', 'Test 1 complete', { success: !!textResult });
+    } catch (err) {
+        log('ERROR', 'Test 1 failed', err);
+    }
+    
+    // Test 2: Send tiny image
+    try {
+        const tinyImage = Buffer.from(
+            'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==',
+            'base64'
+        );
+        const imageResult = await sock.sendMessage(TEST_CHANNEL, {
+            image: tinyImage,
+            caption: 'Test 2: Tiny image'
+        });
+        log('INFO', 'Test 2 complete', { success: !!imageResult });
+    } catch (err) {
+        log('ERROR', 'Test 2 failed', err);
+    }
+    
+    log('INFO', 'Tests completed. Check your channel!');
 }
 
 startBot();
