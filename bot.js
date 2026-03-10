@@ -85,13 +85,26 @@ async function startBot() {
                 const messageText = rawText.slice(9).trim();
                 const channelJid = TEST_CHANNEL;
 
-                // Check if this is a reply to media (like in your channel.js)
+                // Check if this is a reply to media
                 const quotedMessage = msg.message?.extendedTextMessage?.contextInfo?.quotedMessage;
                 
                 // Send typing indicator
                 await sock.sendPresenceUpdate('composing', channelJid);
 
                 let finalMessage = {};
+
+                // ===== CRITICAL: Add channel context info for media =====
+                const channelContext = {
+                    contextInfo: {
+                        forwardingScore: 1,
+                        isForwarded: false,
+                        forwardedNewsletterMessageInfo: {
+                            newsletterJid: channelJid,
+                            newsletterName: 'Tech Zone',
+                            serverMessageId: -1
+                        }
+                    }
+                };
 
                 // If replying to media, handle it
                 if (quotedMessage) {
@@ -106,9 +119,10 @@ async function startBot() {
                         finalMessage = {
                             image: Buffer.concat(buffer),
                             caption: messageText,
-                            mimetype: quotedMessage.imageMessage.mimetype
+                            mimetype: quotedMessage.imageMessage.mimetype,
+                            ...channelContext  // Add context info
                         };
-                        log('INFO', '📸 Sending quoted image to channel');
+                        log('INFO', '📸 Sending quoted image to channel with context');
                     }
                     else if (quotedMessage.videoMessage) {
                         const stream = await downloadContentFromMessage(quotedMessage.videoMessage, 'video');
@@ -118,7 +132,8 @@ async function startBot() {
                         finalMessage = {
                             video: Buffer.concat(buffer),
                             caption: messageText,
-                            mimetype: quotedMessage.videoMessage.mimetype
+                            mimetype: quotedMessage.videoMessage.mimetype,
+                            ...channelContext
                         };
                         log('INFO', '🎥 Sending quoted video to channel');
                     }
@@ -130,7 +145,8 @@ async function startBot() {
                         finalMessage = {
                             audio: Buffer.concat(buffer),
                             mimetype: quotedMessage.audioMessage.mimetype,
-                            ptt: quotedMessage.audioMessage.ptt || false
+                            ptt: quotedMessage.audioMessage.ptt || false,
+                            ...channelContext
                         };
                         log('INFO', '🎵 Sending quoted audio to channel');
                     }
@@ -143,7 +159,8 @@ async function startBot() {
                             document: Buffer.concat(buffer),
                             mimetype: quotedMessage.documentMessage.mimetype,
                             fileName: quotedMessage.documentMessage.fileName || 'document',
-                            caption: messageText
+                            caption: messageText,
+                            ...channelContext
                         };
                         log('INFO', '📄 Sending quoted document to channel');
                     }
@@ -154,12 +171,13 @@ async function startBot() {
                         
                         finalMessage = {
                             sticker: Buffer.concat(buffer),
-                            mimetype: quotedMessage.stickerMessage.mimetype
+                            mimetype: quotedMessage.stickerMessage.mimetype,
+                            ...channelContext
                         };
                         log('INFO', '😊 Sending quoted sticker to channel');
                     }
                 }
-                // If no quoted media, check if current message has media (like sending image with caption)
+                // If no quoted media, check if current message has media
                 else if (msg.message?.imageMessage || msg.message?.videoMessage || 
                          msg.message?.audioMessage || msg.message?.documentMessage || 
                          msg.message?.stickerMessage) {
@@ -174,7 +192,8 @@ async function startBot() {
                         finalMessage = {
                             image: Buffer.concat(buffer),
                             caption: messageText,
-                            mimetype: msg.message.imageMessage.mimetype
+                            mimetype: msg.message.imageMessage.mimetype,
+                            ...channelContext
                         };
                     }
                     else if (msg.message?.videoMessage) {
@@ -185,7 +204,8 @@ async function startBot() {
                         finalMessage = {
                             video: Buffer.concat(buffer),
                             caption: messageText,
-                            mimetype: msg.message.videoMessage.mimetype
+                            mimetype: msg.message.videoMessage.mimetype,
+                            ...channelContext
                         };
                     }
                     else if (msg.message?.audioMessage) {
@@ -196,7 +216,8 @@ async function startBot() {
                         finalMessage = {
                             audio: Buffer.concat(buffer),
                             mimetype: msg.message.audioMessage.mimetype,
-                            ptt: msg.message.audioMessage.ptt || false
+                            ptt: msg.message.audioMessage.ptt || false,
+                            ...channelContext
                         };
                     }
                     else if (msg.message?.documentMessage) {
@@ -208,7 +229,8 @@ async function startBot() {
                             document: Buffer.concat(buffer),
                             mimetype: msg.message.documentMessage.mimetype,
                             fileName: msg.message.documentMessage.fileName || 'document',
-                            caption: messageText
+                            caption: messageText,
+                            ...channelContext
                         };
                     }
                     else if (msg.message?.stickerMessage) {
@@ -218,7 +240,8 @@ async function startBot() {
                         
                         finalMessage = {
                             sticker: Buffer.concat(buffer),
-                            mimetype: msg.message.stickerMessage.mimetype
+                            mimetype: msg.message.stickerMessage.mimetype,
+                            ...channelContext
                         };
                     }
                 }
@@ -229,7 +252,7 @@ async function startBot() {
                 }
 
                 // Send to channel
-                if (Object.keys(finalMessage).length > 0 && messageText) {
+                if (Object.keys(finalMessage).length > 0) {
                     await sock.sendMessage(channelJid, finalMessage);
                     
                     // Confirm to user
