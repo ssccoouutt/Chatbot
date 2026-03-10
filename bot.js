@@ -47,10 +47,6 @@ async function startBot() {
         } else if (connection === "open") {
             console.log("✅ Bot connected!");
             console.log(`📢 Channel ID: ${TEST_CHANNEL}`);
-            console.log("\n📋 Commands (use in ANY chat EXCEPT the channel):");
-            console.log("  • .test1 - Send test image directly to channel");
-            console.log("  • Reply to an image with .test2");
-            console.log("  • .channel text - Send text to channel");
         }
     });
 
@@ -62,111 +58,203 @@ async function startBot() {
 
         const from = msg.key.remoteJid;
         
-        // ===== IMPORTANT: IGNORE messages FROM the channel itself =====
-        if (from === TEST_CHANNEL) {
-            // Don't process commands sent IN the channel
-            return;
-        }
-        
-        // Get message text
-        let text = '';
-        if (msg.message.conversation) {
-            text = msg.message.conversation;
-        } else if (msg.message.extendedTextMessage) {
-            text = msg.message.extendedTextMessage.text;
-        } else {
-            // Not a text message, but could be media with caption
-            // Check for image/video with caption
-            if (msg.message.imageMessage) {
-                text = msg.message.imageMessage.caption || '';
-            } else if (msg.message.videoMessage) {
-                text = msg.message.videoMessage.caption || '';
-            } else if (msg.message.documentMessage) {
-                text = msg.message.documentMessage.caption || '';
-            }
-        }
+        // Get message text - just like in your big bot
+        const userMessage = (
+            msg.message?.conversation?.trim() ||
+            msg.message?.extendedTextMessage?.text?.trim() ||
+            msg.message?.imageMessage?.caption?.trim() ||
+            msg.message?.videoMessage?.caption?.trim() ||
+            ''
+        ).toLowerCase();
 
-        if (!text) return;
+        // Preserve raw text for captions
+        const rawText = msg.message?.conversation?.trim() ||
+            msg.message?.extendedTextMessage?.text?.trim() ||
+            msg.message?.imageMessage?.caption?.trim() ||
+            msg.message?.videoMessage?.caption?.trim() ||
+            '';
 
-        log('INFO', `📨 Message from ${from}: ${text}`);
+        if (!userMessage) return;
 
-        // ===== TEST 1: Direct image send (no reply) =====
-        if (text === '.test1') {
-            log('INFO', '📸 TEST 1: Sending direct test image');
-            
-            // Create a test image (colorful 100x100 PNG)
-            const testImage = Buffer.from(
-                'iVBORw0KGgoAAAANSUhEUgAAAGQAAABkCAYAAABw4pVUAAAAAXNSR0IArs4c6QAAAARzQklUCAgICHwIZIgAAAAtSURBVHic7cEBDQAAAMKg909tDwcUAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHwavAABU8Iq7QAAAABJRU5ErkJggg==',
-                'base64'
-            );
-            
+        log('INFO', `📨 Command from ${from}: ${userMessage}`);
+
+        // ===== CHANNEL COMMAND - EXACTLY LIKE YOUR KNIGHTBOT =====
+        if (userMessage.startsWith('.channel')) {
             try {
-                const result = await sock.sendMessage(TEST_CHANNEL, {
-                    image: testImage,
-                    caption: 'TEST 1: Direct image send'
-                });
+                // Get the message text after .channel
+                const messageText = rawText.slice(9).trim();
+                const channelJid = TEST_CHANNEL;
+
+                // Check if this is a reply to media (like in your channel.js)
+                const quotedMessage = msg.message?.extendedTextMessage?.contextInfo?.quotedMessage;
                 
-                log('INFO', '✅ TEST 1 result', result);
-                await sock.sendMessage(from, { text: '✅ TEST 1: Image sent to channel' });
-            } catch (err) {
-                log('ERROR', '❌ TEST 1 failed', err);
-                await sock.sendMessage(from, { text: '❌ TEST 1 failed: ' + err.message });
-            }
-        }
-        
-        // ===== TEST 2: Reply to image =====
-        else if (text === '.test2') {
-            const quotedMsg = msg.message?.extendedTextMessage?.contextInfo?.quotedMessage;
-            
-            if (!quotedMsg?.imageMessage) {
-                await sock.sendMessage(from, { text: '❌ Please reply to an image with .test2' });
-                return;
-            }
-            
-            log('INFO', '📸 TEST 2: Processing replied image');
-            
-            try {
-                // Download the image
-                const stream = await downloadContentFromMessage(quotedMsg.imageMessage, 'image');
-                const buffer = [];
-                for await (const chunk of stream) buffer.push(chunk);
-                const imageBuffer = Buffer.concat(buffer);
-                
-                log('INFO', 'Image downloaded', { size: imageBuffer.length });
-                
+                // Send typing indicator
+                await sock.sendPresenceUpdate('composing', channelJid);
+
+                let finalMessage = {};
+
+                // If replying to media, handle it
+                if (quotedMessage) {
+                    log('INFO', '📎 Processing quoted media', { type: Object.keys(quotedMessage)[0] });
+                    
+                    if (quotedMessage.imageMessage) {
+                        // Download image
+                        const stream = await downloadContentFromMessage(quotedMessage.imageMessage, 'image');
+                        const buffer = [];
+                        for await (const chunk of stream) buffer.push(chunk);
+                        
+                        finalMessage = {
+                            image: Buffer.concat(buffer),
+                            caption: messageText,
+                            mimetype: quotedMessage.imageMessage.mimetype
+                        };
+                        log('INFO', '📸 Sending quoted image to channel');
+                    }
+                    else if (quotedMessage.videoMessage) {
+                        const stream = await downloadContentFromMessage(quotedMessage.videoMessage, 'video');
+                        const buffer = [];
+                        for await (const chunk of stream) buffer.push(chunk);
+                        
+                        finalMessage = {
+                            video: Buffer.concat(buffer),
+                            caption: messageText,
+                            mimetype: quotedMessage.videoMessage.mimetype
+                        };
+                        log('INFO', '🎥 Sending quoted video to channel');
+                    }
+                    else if (quotedMessage.audioMessage) {
+                        const stream = await downloadContentFromMessage(quotedMessage.audioMessage, 'audio');
+                        const buffer = [];
+                        for await (const chunk of stream) buffer.push(chunk);
+                        
+                        finalMessage = {
+                            audio: Buffer.concat(buffer),
+                            mimetype: quotedMessage.audioMessage.mimetype,
+                            ptt: quotedMessage.audioMessage.ptt || false
+                        };
+                        log('INFO', '🎵 Sending quoted audio to channel');
+                    }
+                    else if (quotedMessage.documentMessage) {
+                        const stream = await downloadContentFromMessage(quotedMessage.documentMessage, 'document');
+                        const buffer = [];
+                        for await (const chunk of stream) buffer.push(chunk);
+                        
+                        finalMessage = {
+                            document: Buffer.concat(buffer),
+                            mimetype: quotedMessage.documentMessage.mimetype,
+                            fileName: quotedMessage.documentMessage.fileName || 'document',
+                            caption: messageText
+                        };
+                        log('INFO', '📄 Sending quoted document to channel');
+                    }
+                    else if (quotedMessage.stickerMessage) {
+                        const stream = await downloadContentFromMessage(quotedMessage.stickerMessage, 'sticker');
+                        const buffer = [];
+                        for await (const chunk of stream) buffer.push(chunk);
+                        
+                        finalMessage = {
+                            sticker: Buffer.concat(buffer),
+                            mimetype: quotedMessage.stickerMessage.mimetype
+                        };
+                        log('INFO', '😊 Sending quoted sticker to channel');
+                    }
+                }
+                // If no quoted media, check if current message has media (like sending image with caption)
+                else if (msg.message?.imageMessage || msg.message?.videoMessage || 
+                         msg.message?.audioMessage || msg.message?.documentMessage || 
+                         msg.message?.stickerMessage) {
+                    
+                    log('INFO', '📎 Processing direct media message');
+                    
+                    if (msg.message?.imageMessage) {
+                        const stream = await downloadContentFromMessage(msg.message.imageMessage, 'image');
+                        const buffer = [];
+                        for await (const chunk of stream) buffer.push(chunk);
+                        
+                        finalMessage = {
+                            image: Buffer.concat(buffer),
+                            caption: messageText,
+                            mimetype: msg.message.imageMessage.mimetype
+                        };
+                    }
+                    else if (msg.message?.videoMessage) {
+                        const stream = await downloadContentFromMessage(msg.message.videoMessage, 'video');
+                        const buffer = [];
+                        for await (const chunk of stream) buffer.push(chunk);
+                        
+                        finalMessage = {
+                            video: Buffer.concat(buffer),
+                            caption: messageText,
+                            mimetype: msg.message.videoMessage.mimetype
+                        };
+                    }
+                    else if (msg.message?.audioMessage) {
+                        const stream = await downloadContentFromMessage(msg.message.audioMessage, 'audio');
+                        const buffer = [];
+                        for await (const chunk of stream) buffer.push(chunk);
+                        
+                        finalMessage = {
+                            audio: Buffer.concat(buffer),
+                            mimetype: msg.message.audioMessage.mimetype,
+                            ptt: msg.message.audioMessage.ptt || false
+                        };
+                    }
+                    else if (msg.message?.documentMessage) {
+                        const stream = await downloadContentFromMessage(msg.message.documentMessage, 'document');
+                        const buffer = [];
+                        for await (const chunk of stream) buffer.push(chunk);
+                        
+                        finalMessage = {
+                            document: Buffer.concat(buffer),
+                            mimetype: msg.message.documentMessage.mimetype,
+                            fileName: msg.message.documentMessage.fileName || 'document',
+                            caption: messageText
+                        };
+                    }
+                    else if (msg.message?.stickerMessage) {
+                        const stream = await downloadContentFromMessage(msg.message.stickerMessage, 'sticker');
+                        const buffer = [];
+                        for await (const chunk of stream) buffer.push(chunk);
+                        
+                        finalMessage = {
+                            sticker: Buffer.concat(buffer),
+                            mimetype: msg.message.stickerMessage.mimetype
+                        };
+                    }
+                }
+                // Text only
+                else {
+                    finalMessage = { text: messageText };
+                    log('INFO', '📝 Sending text to channel');
+                }
+
                 // Send to channel
-                const result = await sock.sendMessage(TEST_CHANNEL, {
-                    image: imageBuffer,
-                    caption: 'TEST 2: Replied image'
+                if (Object.keys(finalMessage).length > 0 && messageText) {
+                    await sock.sendMessage(channelJid, finalMessage);
+                    
+                    // Confirm to user
+                    let sentType = 'message';
+                    if (quotedMessage) sentType = 'media';
+                    else if (msg.message?.imageMessage) sentType = 'image';
+                    else if (msg.message?.videoMessage) sentType = 'video';
+                    else if (msg.message?.audioMessage) sentType = 'audio';
+                    else if (msg.message?.documentMessage) sentType = 'document';
+                    else if (msg.message?.stickerMessage) sentType = 'sticker';
+                    
+                    await sock.sendMessage(from, { 
+                        text: `✅ ${sentType} sent to channel successfully!` 
+                    });
+                } else {
+                    await sock.sendMessage(from, { 
+                        text: '❌ Please provide a message to send!' 
+                    });
+                }
+
+            } catch (error) {
+                log('ERROR', 'Channel command error', error);
+                await sock.sendMessage(from, { 
+                    text: '❌ Failed to send to channel: ' + error.message 
                 });
-                
-                log('INFO', '✅ TEST 2 result', result);
-                await sock.sendMessage(from, { text: '✅ TEST 2: Replied image sent to channel' });
-                
-            } catch (err) {
-                log('ERROR', '❌ TEST 2 failed', err);
-                await sock.sendMessage(from, { text: '❌ TEST 2 failed: ' + err.message });
-            }
-        }
-        
-        // ===== Channel text command =====
-        else if (text.startsWith('.channel ')) {
-            const args = text.slice(9).trim(); // Remove '.channel '
-            
-            if (!args) {
-                await sock.sendMessage(from, { text: '❌ Usage: .channel your message' });
-                return;
-            }
-            
-            log('INFO', '📝 Sending text to channel', { text: args });
-            
-            try {
-                const result = await sock.sendMessage(TEST_CHANNEL, { text: args });
-                log('INFO', '✅ Text sent', result);
-                await sock.sendMessage(from, { text: '✅ Text sent to channel' });
-            } catch (err) {
-                log('ERROR', '❌ Text send failed', err);
-                await sock.sendMessage(from, { text: '❌ Failed: ' + err.message });
             }
         }
     });
