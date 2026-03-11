@@ -61,138 +61,137 @@ async function startBot() {
         if (qr) qrcode.generate(qr, { small: true });
         if (connection === "close") {
             const shouldReconnect = (lastDisconnect.error instanceof Boom)?.output?.statusCode !== DisconnectReason.loggedOut;
+            console.log("Connection closed, reconnecting:", shouldReconnect);
             if (shouldReconnect) startBot();
         } else if (connection === "open") {
-            console.log("✅ Bot connected!");
+            console.log("\n✅✅✅ BOT CONNECTED SUCCESSFULLY! ✅✅✅");
             console.log(`📢 Channel ID: ${TEST_CHANNEL}`);
+            console.log("📱 Send .ping to test the bot\n");
         }
     });
 
     sock.ev.on("creds.update", saveCreds);
 
     sock.ev.on("messages.upsert", async (m) => {
+        console.log("\n📥📥📥 MESSAGE EVENT TRIGGERED! 📥📥📥");
+        console.log("Event type:", m.type);
+        console.log("Message count:", m.messages?.length);
+        
         const msg = m.messages[0];
-        if (!msg.message || msg.key.fromMe) return;
+        if (!msg.message || msg.key.fromMe) {
+            console.log("⏭️ Skipping: no message or from self");
+            return;
+        }
 
         const from = msg.key.remoteJid;
         
-        // Get message text
-        const userMessage = (
-            msg.message?.conversation?.trim() ||
-            msg.message?.extendedTextMessage?.text?.trim() ||
-            msg.message?.imageMessage?.caption?.trim() ||
-            msg.message?.videoMessage?.caption?.trim() ||
-            ''
-        ).toLowerCase();
+        // Get message text - try all possible sources
+        let text = '';
+        let rawText = '';
+        
+        if (msg.message?.conversation) {
+            text = msg.message.conversation;
+            rawText = text;
+            console.log("📝 Conversation text:", text);
+        }
+        else if (msg.message?.extendedTextMessage?.text) {
+            text = msg.message.extendedTextMessage.text;
+            rawText = text;
+            console.log("📝 Extended text:", text);
+        }
+        else if (msg.message?.imageMessage?.caption) {
+            text = msg.message.imageMessage.caption;
+            rawText = text;
+            console.log("🖼️ Image caption:", text);
+        }
+        else if (msg.message?.videoMessage?.caption) {
+            text = msg.message.videoMessage.caption;
+            rawText = text;
+            console.log("🎥 Video caption:", text);
+        }
+        else {
+            console.log("❌ No text found in message");
+            console.log("Message keys:", Object.keys(msg.message));
+            return;
+        }
 
-        const rawText = msg.message?.conversation?.trim() ||
-            msg.message?.extendedTextMessage?.text?.trim() ||
-            msg.message?.imageMessage?.caption?.trim() ||
-            msg.message?.videoMessage?.caption?.trim() ||
-            '';
+        const userMessage = text.toLowerCase().trim();
+        
+        console.log(`\n📨 From: ${from}`);
+        console.log(`💬 Message: "${text}"`);
+        console.log(`🔍 Command: ${userMessage}`);
 
-        if (!userMessage) return;
-
-        log('INFO', `📨 Command from ${from}: ${userMessage}`);
-
-        // ===== CHANNEL COMMAND =====
-        if (userMessage.startsWith('.channel')) {
+        // ===== PING COMMAND - SIMPLE TEST =====
+        if (userMessage === '.ping') {
+            console.log("🎯 PING COMMAND DETECTED!");
             try {
-                const messageText = rawText.slice(9).trim();
-                const channelJid = TEST_CHANNEL;
-                const quotedMessage = msg.message?.extendedTextMessage?.contextInfo?.quotedMessage;
-                
-                await sock.sendPresenceUpdate('composing', channelJid);
-
-                let finalMessage = {};
-
-                // Channel context info
-                const channelContext = {
-                    contextInfo: {
-                        forwardingScore: 1,
-                        isForwarded: false,
-                        forwardedNewsletterMessageInfo: {
-                            newsletterJid: channelJid,
-                            newsletterName: 'Tech Zone',
-                            serverMessageId: -1
-                        }
-                    }
-                };
-
-                // Handle quoted media
-                if (quotedMessage) {
-                    log('INFO', '📎 Processing quoted media', { type: Object.keys(quotedMessage)[0] });
-                    
-                    if (quotedMessage.imageMessage) {
-                        const stream = await downloadContentFromMessage(quotedMessage.imageMessage, 'image');
-                        const buffer = [];
-                        for await (const chunk of stream) buffer.push(chunk);
-                        const imageBuffer = Buffer.concat(buffer);
-                        
-                        // Generate thumbnail
-                        const thumbnail = await generateThumbnail(imageBuffer);
-                        
-                        finalMessage = {
-                            image: imageBuffer,
-                            caption: messageText,
-                            mimetype: quotedMessage.imageMessage.mimetype,
-                            jpegThumbnail: thumbnail, // CRITICAL for channel preview
-                            ...channelContext
-                        };
-                        log('INFO', '📸 Sending quoted image with thumbnail');
-                    }
-                    // ... other media types (video, audio, document, sticker) ...
-                }
-                // Handle direct media
-                else if (msg.message?.imageMessage) {
-                    const stream = await downloadContentFromMessage(msg.message.imageMessage, 'image');
+                await sock.sendMessage(from, { text: 'pong 🏓' });
+                console.log("✅ Response sent: pong");
+            } catch (err) {
+                console.log("❌ Failed to send response:", err.message);
+            }
+        }
+        
+        // ===== TEST COMMAND =====
+        else if (userMessage === '.test') {
+            console.log("🎯 TEST COMMAND DETECTED!");
+            try {
+                await sock.sendMessage(from, { text: '✅ Bot is working correctly!' });
+                console.log("✅ Response sent");
+            } catch (err) {
+                console.log("❌ Failed:", err.message);
+            }
+        }
+        
+        // ===== HELP COMMAND =====
+        else if (userMessage === '.help' || userMessage === '.menu') {
+            const helpText = `*Available Commands:*\n\n• .ping - Test bot response\n• .test - Check if bot works\n• .help - Show this menu\n• .channel <text> - Send text to channel`;
+            await sock.sendMessage(from, { text: helpText });
+            console.log("✅ Help sent");
+        }
+        
+        // ===== CHANNEL COMMAND =====
+        else if (userMessage.startsWith('.channel')) {
+            const messageText = rawText.slice(9).trim();
+            const quotedMessage = msg.message?.extendedTextMessage?.contextInfo?.quotedMessage;
+            
+            try {
+                if (quotedMessage?.imageMessage) {
+                    console.log("📸 Processing quoted image");
+                    const stream = await downloadContentFromMessage(quotedMessage.imageMessage, 'image');
                     const buffer = [];
                     for await (const chunk of stream) buffer.push(chunk);
                     const imageBuffer = Buffer.concat(buffer);
                     
-                    // Generate thumbnail
-                    const thumbnail = await generateThumbnail(imageBuffer);
-                    
-                    finalMessage = {
+                    await sock.sendMessage(TEST_CHANNEL, {
                         image: imageBuffer,
-                        caption: messageText,
-                        mimetype: msg.message.imageMessage.mimetype,
-                        jpegThumbnail: thumbnail, // CRITICAL for channel preview
-                        ...channelContext
-                    };
-                    log('INFO', '📸 Sending direct image with thumbnail');
+                        caption: messageText || 'Sent via bot'
+                    });
+                    await sock.sendMessage(from, { text: '✅ Image sent to channel!' });
                 }
-                // Handle text only
                 else if (messageText) {
-                    finalMessage = { text: messageText };
-                    log('INFO', '📝 Sending text to channel');
+                    await sock.sendMessage(TEST_CHANNEL, { text: messageText });
+                    await sock.sendMessage(from, { text: '✅ Text sent to channel!' });
                 }
-
-                // Send to channel
-                if (Object.keys(finalMessage).length > 0) {
-                    await sock.sendMessage(channelJid, finalMessage);
-                    
-                    let sentType = 'message';
-                    if (quotedMessage) sentType = 'media';
-                    else if (msg.message?.imageMessage) sentType = 'image';
-                    
-                    await sock.sendMessage(from, { 
-                        text: `✅ ${sentType} sent to channel successfully!` 
-                    });
-                } else {
-                    await sock.sendMessage(from, { 
-                        text: '❌ Please provide a message to send!' 
-                    });
+                else {
+                    await sock.sendMessage(from, { text: '❌ Usage: .channel your message' });
                 }
-
-            } catch (error) {
-                log('ERROR', 'Channel command error', error);
-                await sock.sendMessage(from, { 
-                    text: '❌ Failed to send to channel: ' + error.message 
-                });
+            } catch (err) {
+                console.log("❌ Channel error:", err.message);
+                await sock.sendMessage(from, { text: '❌ Failed: ' + err.message });
             }
         }
+        
+        // Echo any other command for debugging
+        else if (userMessage.startsWith('.')) {
+            await sock.sendMessage(from, { text: `📢 Received command: "${text}"` });
+            console.log("✅ Echo sent for unknown command");
+        }
     });
+
+    // Log all events for debugging
+    sock.ev.on("presence.update", (p) => console.log("👤 Presence update"));
+    sock.ev.on("messages.reaction", (r) => console.log("🔔 Reaction"));
 }
 
 startBot();
