@@ -61,7 +61,69 @@ function cleanWhitespace(text) {
     return text.trim();
 }
 
-// EXACT SAME FORMATTING FUNCTION FROM YOUR ORIGINAL SCRIPT
+// Convert Telegram message entities to HTML for Telegram channel (preserves formatting)
+function convertToTelegramHTML(text, entities) {
+    if (!text) return text;
+    
+    if (!entities || entities.length === 0) return text;
+    
+    // Sort entities in reverse order to apply from end to start
+    const sortedEntities = [...entities].sort((a, b) => b.offset - a.offset);
+    let result = text;
+    
+    for (const entity of sortedEntities) {
+        const start = entity.offset;
+        const end = start + entity.length;
+        const content = text.substring(start, end);
+        
+        let htmlTag = '';
+        let closeTag = '';
+        
+        switch (entity.type) {
+            case 'bold':
+                htmlTag = '<b>';
+                closeTag = '</b>';
+                break;
+            case 'italic':
+                htmlTag = '<i>';
+                closeTag = '</i>';
+                break;
+            case 'underline':
+                htmlTag = '<u>';
+                closeTag = '</u>';
+                break;
+            case 'strikethrough':
+                htmlTag = '<s>';
+                closeTag = '</s>';
+                break;
+            case 'code':
+                htmlTag = '<code>';
+                closeTag = '</code>';
+                break;
+            case 'pre':
+                htmlTag = '<pre>';
+                closeTag = '</pre>';
+                break;
+            case 'text_link':
+                htmlTag = `<a href="${entity.url}">`;
+                closeTag = '</a>';
+                break;
+            case 'spoiler':
+                htmlTag = '<tg-spoiler>';
+                closeTag = '</tg-spoiler>';
+                break;
+            default:
+                continue;
+        }
+        
+        const replacement = htmlTag + content + closeTag;
+        result = result.substring(0, start) + replacement + result.substring(end);
+    }
+    
+    return result;
+}
+
+// Convert Telegram to WhatsApp format (from your original script)
 function convertTelegramToWhatsApp(text, entities) {
     if (!text) return text;
     
@@ -126,32 +188,6 @@ function convertTelegramToWhatsApp(text, entities) {
     return cleanWhitespace(formatted);
 }
 
-// Extract entities from Telegram message
-function extractEntities(msg) {
-    const entities = [];
-    
-    if (msg.entities) {
-        for (const entity of msg.entities) {
-            let type = '';
-            switch (entity.type) {
-                case 'bold': type = 'bold'; break;
-                case 'italic': type = 'italic'; break;
-                case 'strikethrough': type = 'strikethrough'; break;
-                case 'code': type = 'code'; break;
-                case 'pre': type = 'pre'; break;
-                default: continue;
-            }
-            entities.push({
-                offset: entity.offset,
-                length: entity.length,
-                type: type
-            });
-        }
-    }
-    
-    return entities;
-}
-
 // ===== FORWARDING FUNCTIONS =====
 async function sendToWhatsAppChannel(messageData) {
     try {
@@ -193,13 +229,16 @@ async function sendToTelegramChannel(messageData) {
         if (!telegramBot) return false;
         
         if (messageData.type === 'text') {
-            // Send with HTML parse mode for formatting
-            await telegramBot.sendMessage(TELEGRAM_CHANNEL_ID, messageData.originalText, {
+            // Convert to HTML to preserve formatting
+            const formattedText = convertToTelegramHTML(messageData.originalText, messageData.entities);
+            await telegramBot.sendMessage(TELEGRAM_CHANNEL_ID, formattedText, {
                 parse_mode: 'HTML'
             });
-            console.log(`✅ Text sent to Telegram channel`);
+            console.log(`✅ Text sent to Telegram channel with formatting preserved`);
         } else if (messageData.type === 'media') {
             const caption = messageData.originalCaption || '';
+            // Format caption with HTML
+            const formattedCaption = convertToTelegramHTML(caption, messageData.captionEntities);
             const mediaBuffer = messageData.buffer;
             
             const ext = messageData.mediaType === 'photo' ? 'jpg' : 
@@ -210,22 +249,22 @@ async function sendToTelegramChannel(messageData) {
             try {
                 if (messageData.mediaType === 'photo') {
                     await telegramBot.sendPhoto(TELEGRAM_CHANNEL_ID, tempFilePath, {
-                        caption: caption,
+                        caption: formattedCaption,
                         parse_mode: 'HTML'
                     });
-                    console.log(`✅ Photo sent to Telegram channel`);
+                    console.log(`✅ Photo sent to Telegram channel with formatted caption`);
                 } else if (messageData.mediaType === 'video') {
                     await telegramBot.sendVideo(TELEGRAM_CHANNEL_ID, tempFilePath, {
-                        caption: caption,
+                        caption: formattedCaption,
                         parse_mode: 'HTML'
                     });
-                    console.log(`✅ Video sent to Telegram channel`);
+                    console.log(`✅ Video sent to Telegram channel with formatted caption`);
                 } else {
                     await telegramBot.sendDocument(TELEGRAM_CHANNEL_ID, tempFilePath, {
-                        caption: caption,
+                        caption: formattedCaption,
                         parse_mode: 'HTML'
                     });
-                    console.log(`✅ Document sent to Telegram channel`);
+                    console.log(`✅ Document sent to Telegram channel with formatted caption`);
                 }
             } finally {
                 if (fs.existsSync(tempFilePath)) {
@@ -376,22 +415,22 @@ function initTelegramBot() {
         const chatId = msg.chat.id;
         const uniqueId = `${chatId}_${Date.now()}_${Math.random().toString(36).substr(2, 6)}`;
         
-        // Handle TEXT messages with formatting
+        // Handle TEXT messages
         if (msg.text) {
             const originalText = msg.text;
-            const entities = extractEntities(msg);
+            const entities = msg.entities || [];
             
             console.log(`\n📝 Text message from ${msg.from.username || msg.from.id}`);
             console.log(`Original: ${originalText.substring(0, 100)}`);
             
-            // Convert to WhatsApp format using the original function
+            // Convert to WhatsApp format
             const formattedForWhatsApp = convertTelegramToWhatsApp(originalText, entities);
-            console.log(`Formatted for WhatsApp: ${formattedForWhatsApp.substring(0, 100)}`);
             
             const messageData = {
                 type: 'text',
                 content: formattedForWhatsApp,
                 originalText: originalText,
+                entities: entities,  // Store entities for Telegram HTML conversion
                 timestamp: Date.now()
             };
             
@@ -423,6 +462,7 @@ function initTelegramBot() {
         // Handle PHOTO messages
         else if (msg.photo) {
             const caption = msg.caption || '';
+            const entities = msg.entities || [];
             
             console.log(`\n📸 Photo from ${msg.from.username || msg.from.id}`);
             console.log(`Caption: ${caption.substring(0, 100)}`);
@@ -433,8 +473,7 @@ function initTelegramBot() {
                 const response = await axios.get(fileLink, { responseType: 'arraybuffer' });
                 const buffer = Buffer.from(response.data);
                 
-                // Extract entities from caption for formatting
-                const entities = extractEntities(msg);
+                // Convert caption to WhatsApp format
                 const formattedCaption = convertTelegramToWhatsApp(caption, entities);
                 
                 const messageData = {
@@ -444,6 +483,7 @@ function initTelegramBot() {
                     size: buffer.length,
                     caption: formattedCaption,
                     originalCaption: caption,
+                    captionEntities: entities,  // Store entities for Telegram HTML conversion
                     timestamp: Date.now()
                 };
                 
@@ -481,6 +521,7 @@ function initTelegramBot() {
         // Handle VIDEO messages
         else if (msg.video) {
             const caption = msg.caption || '';
+            const entities = msg.entities || [];
             
             console.log(`\n🎥 Video from ${msg.from.username || msg.from.id}`);
             console.log(`Caption: ${caption.substring(0, 100)}`);
@@ -491,8 +532,7 @@ function initTelegramBot() {
                 const response = await axios.get(fileLink, { responseType: 'arraybuffer' });
                 const buffer = Buffer.from(response.data);
                 
-                // Extract entities from caption for formatting
-                const entities = extractEntities(msg);
+                // Convert caption to WhatsApp format
                 const formattedCaption = convertTelegramToWhatsApp(caption, entities);
                 
                 const messageData = {
@@ -502,6 +542,7 @@ function initTelegramBot() {
                     size: buffer.length,
                     caption: formattedCaption,
                     originalCaption: caption,
+                    captionEntities: entities,  // Store entities for Telegram HTML conversion
                     timestamp: Date.now()
                 };
                 
@@ -543,13 +584,9 @@ function initTelegramBot() {
         const messageId = callbackQuery.message.message_id;
         const chatId = callbackQuery.message.chat.id;
         
-        console.log(`[DEBUG] Callback received: ${callbackData}`);
-        
         const parts = callbackData.split('_');
         const target = parts.pop();
         const uniqueId = parts.join('_');
-        
-        console.log(`[DEBUG] UniqueId: ${uniqueId}, Target: ${target}`);
         
         const messageData = pendingMessages.get(uniqueId);
         
@@ -625,7 +662,6 @@ async function startBot() {
     sock.ev.on("connection.update", (update) => {
         const { connection, lastDisconnect, qr } = update;
         if (qr) {
-            console.log(`[DEBUG] QR Code received, scanning...`);
             qrcode.generate(qr, { small: true });
         }
         if (connection === "close") {
