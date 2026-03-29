@@ -64,7 +64,6 @@ function cleanWhitespace(text) {
 function convertTelegramToWhatsApp(text) {
     if (!text) return text;
     
-    // Convert markdown to WhatsApp format
     let formatted = text;
     formatted = formatted.replace(/\*\*(.*?)\*\*/g, '*$1*');
     formatted = formatted.replace(/__(.*?)__/g, '_$1_');
@@ -123,7 +122,6 @@ async function sendToTelegramChannel(messageData) {
             const caption = messageData.originalCaption || '';
             const mediaBuffer = messageData.buffer;
             
-            // Save buffer to temp file
             const ext = messageData.mediaType === 'photo' ? 'jpg' : 
                        messageData.mediaType === 'video' ? 'mp4' : 'bin';
             const tempFilePath = path.join(TEMP_DIR, `send_tg_${Date.now()}.${ext}`);
@@ -150,7 +148,6 @@ async function sendToTelegramChannel(messageData) {
                     console.log(`✅ Document sent to Telegram channel`);
                 }
             } finally {
-                // Clean up temp file
                 if (fs.existsSync(tempFilePath)) {
                     fs.unlinkSync(tempFilePath);
                 }
@@ -290,161 +287,164 @@ function initTelegramBot() {
     });
     
     // Handle text messages
-    telegramBot.onText(/^(?!\/start).*$/, async (msg) => {
+    telegramBot.on('message', async (msg) => {
+        // Skip if it's a command, callback query, or has no text
+        if (msg.text && msg.text.startsWith('/')) return;
+        if (msg.callback_query) return;
+        if (!msg.text && !msg.photo && !msg.video && !msg.document) return;
+        
         const chatId = msg.chat.id;
-        const text = msg.text;
         
-        if (!text || text.startsWith('/')) return;
+        // Generate unique ID
+        const uniqueId = `${chatId}_${Date.now()}_${Math.random().toString(36).substr(2, 6)}`;
         
-        console.log(`\n📝 Text message from ${msg.from.username || msg.from.id}: ${text.substring(0, 100)}`);
-        
-        const formattedForWhatsApp = convertTelegramToWhatsApp(text);
-        
-        const messageData = {
-            type: 'text',
-            content: formattedForWhatsApp,
-            originalText: text,
-            timestamp: Date.now()
-        };
-        
-        const pendingKey = `${chatId}_${Date.now()}`;
-        pendingMessages.set(pendingKey, messageData);
-        
-        const confirmationMessage = 
-            `📨 New Message\n\n` +
-            `Preview: ${text.substring(0, 100)}${text.length > 100 ? '...' : ''}\n\n` +
-            `Forward to?`;
-        
-        const opts = {
-            reply_markup: {
-                inline_keyboard: [
-                    [{ text: `📺 WhatsApp Channel`, callback_data: `confirm_${pendingKey}_channel` }],
-                    [{ text: `🌐 Telegram Channel`, callback_data: `confirm_${pendingKey}_telegram` }],
-                    [{ text: `👥 ALL GROUPS (${WHATSAPP_GROUPS.length})`, callback_data: `confirm_${pendingKey}_groups` }],
-                    [{ text: `📱 Own Chat`, callback_data: `confirm_${pendingKey}_own` }],
-                    [{ text: `🌟 ALL DESTINATIONS`, callback_data: `confirm_${pendingKey}_all` }],
-                    [{ text: `❌ Cancel`, callback_data: `confirm_${pendingKey}_cancel` }]
-                ]
-            }
-        };
-        
-        await telegramBot.sendMessage(chatId, confirmationMessage, opts);
-    });
-    
-    // Handle photos
-    telegramBot.on('photo', async (msg) => {
-        const chatId = msg.chat.id;
-        const caption = msg.caption || '';
-        const photo = msg.photo[msg.photo.length - 1];
-        
-        console.log(`\n📸 Photo from ${msg.from.username || msg.from.id}`);
-        console.log(`📝 Caption: ${caption.substring(0, 100)}`);
-        
-        try {
-            // Download photo
-            const fileLink = await telegramBot.getFileLink(photo.file_id);
-            const response = await axios.get(fileLink, { responseType: 'arraybuffer' });
-            const buffer = Buffer.from(response.data);
+        // Handle text
+        if (msg.text) {
+            const text = msg.text;
+            console.log(`\n📝 Text message from ${msg.from.username || msg.from.id}: ${text.substring(0, 100)}`);
             
-            const formattedCaption = convertTelegramToWhatsApp(caption);
+            const formattedForWhatsApp = convertTelegramToWhatsApp(text);
             
             const messageData = {
-                type: 'media',
-                mediaType: 'photo',
-                buffer: buffer,
-                size: buffer.length,
-                caption: formattedCaption,
-                originalCaption: caption,
+                type: 'text',
+                content: formattedForWhatsApp,
+                originalText: text,
                 timestamp: Date.now()
             };
             
-            const pendingKey = `${chatId}_${Date.now()}`;
-            pendingMessages.set(pendingKey, messageData);
-            
-            const previewText = caption.length > 100 ? caption.substring(0, 100) + '...' : caption || '[No caption]';
-            const fileSizeInfo = ` (${(buffer.length / 1024 / 1024).toFixed(2)}MB)`;
+            pendingMessages.set(uniqueId, messageData);
             
             const confirmationMessage = 
-                `📨 New Photo\n\n` +
-                `Caption: ${previewText}${fileSizeInfo}\n\n` +
+                `📨 New Message\n\n` +
+                `Preview: ${text.substring(0, 100)}${text.length > 100 ? '...' : ''}\n\n` +
                 `Forward to?`;
             
             const opts = {
                 reply_markup: {
                     inline_keyboard: [
-                        [{ text: `📺 WhatsApp Channel`, callback_data: `confirm_${pendingKey}_channel` }],
-                        [{ text: `🌐 Telegram Channel`, callback_data: `confirm_${pendingKey}_telegram` }],
-                        [{ text: `👥 ALL GROUPS (${WHATSAPP_GROUPS.length})`, callback_data: `confirm_${pendingKey}_groups` }],
-                        [{ text: `📱 Own Chat`, callback_data: `confirm_${pendingKey}_own` }],
-                        [{ text: `🌟 ALL DESTINATIONS`, callback_data: `confirm_${pendingKey}_all` }],
-                        [{ text: `❌ Cancel`, callback_data: `confirm_${pendingKey}_cancel` }]
+                        [{ text: `📺 WhatsApp Channel`, callback_data: `${uniqueId}_channel` }],
+                        [{ text: `🌐 Telegram Channel`, callback_data: `${uniqueId}_telegram` }],
+                        [{ text: `👥 ALL GROUPS (${WHATSAPP_GROUPS.length})`, callback_data: `${uniqueId}_groups` }],
+                        [{ text: `📱 Own Chat`, callback_data: `${uniqueId}_own` }],
+                        [{ text: `🌟 ALL DESTINATIONS`, callback_data: `${uniqueId}_all` }],
+                        [{ text: `❌ Cancel`, callback_data: `${uniqueId}_cancel` }]
                     ]
                 }
             };
             
             await telegramBot.sendMessage(chatId, confirmationMessage, opts);
-            
-        } catch (error) {
-            console.error('❌ Error processing photo:', error.message);
-            await telegramBot.sendMessage(chatId, '❌ Failed to process image.');
         }
-    });
-    
-    // Handle videos
-    telegramBot.on('video', async (msg) => {
-        const chatId = msg.chat.id;
-        const caption = msg.caption || '';
-        const video = msg.video;
         
-        console.log(`\n🎥 Video from ${msg.from.username || msg.from.id}`);
-        console.log(`📝 Caption: ${caption.substring(0, 100)}`);
+        // Handle photo
+        else if (msg.photo) {
+            const caption = msg.caption || '';
+            const photo = msg.photo[msg.photo.length - 1];
+            
+            console.log(`\n📸 Photo from ${msg.from.username || msg.from.id}`);
+            console.log(`📝 Caption: ${caption.substring(0, 100)}`);
+            
+            try {
+                const fileLink = await telegramBot.getFileLink(photo.file_id);
+                const response = await axios.get(fileLink, { responseType: 'arraybuffer' });
+                const buffer = Buffer.from(response.data);
+                
+                const formattedCaption = convertTelegramToWhatsApp(caption);
+                
+                const messageData = {
+                    type: 'media',
+                    mediaType: 'photo',
+                    buffer: buffer,
+                    size: buffer.length,
+                    caption: formattedCaption,
+                    originalCaption: caption,
+                    timestamp: Date.now()
+                };
+                
+                pendingMessages.set(uniqueId, messageData);
+                
+                const previewText = caption.length > 100 ? caption.substring(0, 100) + '...' : caption || '[No caption]';
+                const fileSizeInfo = ` (${(buffer.length / 1024 / 1024).toFixed(2)}MB)`;
+                
+                const confirmationMessage = 
+                    `📨 New Photo\n\n` +
+                    `Caption: ${previewText}${fileSizeInfo}\n\n` +
+                    `Forward to?`;
+                
+                const opts = {
+                    reply_markup: {
+                        inline_keyboard: [
+                            [{ text: `📺 WhatsApp Channel`, callback_data: `${uniqueId}_channel` }],
+                            [{ text: `🌐 Telegram Channel`, callback_data: `${uniqueId}_telegram` }],
+                            [{ text: `👥 ALL GROUPS (${WHATSAPP_GROUPS.length})`, callback_data: `${uniqueId}_groups` }],
+                            [{ text: `📱 Own Chat`, callback_data: `${uniqueId}_own` }],
+                            [{ text: `🌟 ALL DESTINATIONS`, callback_data: `${uniqueId}_all` }],
+                            [{ text: `❌ Cancel`, callback_data: `${uniqueId}_cancel` }]
+                        ]
+                    }
+                };
+                
+                await telegramBot.sendMessage(chatId, confirmationMessage, opts);
+                
+            } catch (error) {
+                console.error('❌ Error processing photo:', error.message);
+                await telegramBot.sendMessage(chatId, '❌ Failed to process image.');
+            }
+        }
         
-        try {
-            const fileLink = await telegramBot.getFileLink(video.file_id);
-            const response = await axios.get(fileLink, { responseType: 'arraybuffer' });
-            const buffer = Buffer.from(response.data);
+        // Handle video
+        else if (msg.video) {
+            const caption = msg.caption || '';
+            const video = msg.video;
             
-            const formattedCaption = convertTelegramToWhatsApp(caption);
+            console.log(`\n🎥 Video from ${msg.from.username || msg.from.id}`);
+            console.log(`📝 Caption: ${caption.substring(0, 100)}`);
             
-            const messageData = {
-                type: 'media',
-                mediaType: 'video',
-                buffer: buffer,
-                size: buffer.length,
-                caption: formattedCaption,
-                originalCaption: caption,
-                timestamp: Date.now()
-            };
-            
-            const pendingKey = `${chatId}_${Date.now()}`;
-            pendingMessages.set(pendingKey, messageData);
-            
-            const previewText = caption.length > 100 ? caption.substring(0, 100) + '...' : caption || '[No caption]';
-            const fileSizeInfo = ` (${(buffer.length / 1024 / 1024).toFixed(2)}MB)`;
-            
-            const confirmationMessage = 
-                `📨 New Video\n\n` +
-                `Caption: ${previewText}${fileSizeInfo}\n\n` +
-                `Forward to?`;
-            
-            const opts = {
-                reply_markup: {
-                    inline_keyboard: [
-                        [{ text: `📺 WhatsApp Channel`, callback_data: `confirm_${pendingKey}_channel` }],
-                        [{ text: `🌐 Telegram Channel`, callback_data: `confirm_${pendingKey}_telegram` }],
-                        [{ text: `👥 ALL GROUPS (${WHATSAPP_GROUPS.length})`, callback_data: `confirm_${pendingKey}_groups` }],
-                        [{ text: `📱 Own Chat`, callback_data: `confirm_${pendingKey}_own` }],
-                        [{ text: `🌟 ALL DESTINATIONS`, callback_data: `confirm_${pendingKey}_all` }],
-                        [{ text: `❌ Cancel`, callback_data: `confirm_${pendingKey}_cancel` }]
-                    ]
-                }
-            };
-            
-            await telegramBot.sendMessage(chatId, confirmationMessage, opts);
-            
-        } catch (error) {
-            console.error('❌ Error processing video:', error.message);
-            await telegramBot.sendMessage(chatId, '❌ Failed to process video.');
+            try {
+                const fileLink = await telegramBot.getFileLink(video.file_id);
+                const response = await axios.get(fileLink, { responseType: 'arraybuffer' });
+                const buffer = Buffer.from(response.data);
+                
+                const formattedCaption = convertTelegramToWhatsApp(caption);
+                
+                const messageData = {
+                    type: 'media',
+                    mediaType: 'video',
+                    buffer: buffer,
+                    size: buffer.length,
+                    caption: formattedCaption,
+                    originalCaption: caption,
+                    timestamp: Date.now()
+                };
+                
+                pendingMessages.set(uniqueId, messageData);
+                
+                const previewText = caption.length > 100 ? caption.substring(0, 100) + '...' : caption || '[No caption]';
+                const fileSizeInfo = ` (${(buffer.length / 1024 / 1024).toFixed(2)}MB)`;
+                
+                const confirmationMessage = 
+                    `📨 New Video\n\n` +
+                    `Caption: ${previewText}${fileSizeInfo}\n\n` +
+                    `Forward to?`;
+                
+                const opts = {
+                    reply_markup: {
+                        inline_keyboard: [
+                            [{ text: `📺 WhatsApp Channel`, callback_data: `${uniqueId}_channel` }],
+                            [{ text: `🌐 Telegram Channel`, callback_data: `${uniqueId}_telegram` }],
+                            [{ text: `👥 ALL GROUPS (${WHATSAPP_GROUPS.length})`, callback_data: `${uniqueId}_groups` }],
+                            [{ text: `📱 Own Chat`, callback_data: `${uniqueId}_own` }],
+                            [{ text: `🌟 ALL DESTINATIONS`, callback_data: `${uniqueId}_all` }],
+                            [{ text: `❌ Cancel`, callback_data: `${uniqueId}_cancel` }]
+                        ]
+                    }
+                };
+                
+                await telegramBot.sendMessage(chatId, confirmationMessage, opts);
+                
+            } catch (error) {
+                console.error('❌ Error processing video:', error.message);
+                await telegramBot.sendMessage(chatId, '❌ Failed to process video.');
+            }
         }
     });
     
@@ -454,18 +454,19 @@ function initTelegramBot() {
         const messageId = callbackQuery.message.message_id;
         const chatId = callbackQuery.message.chat.id;
         
-        const parts = callbackData.split('_');
-        if (parts.length !== 3 || parts[0] !== 'confirm') {
-            await telegramBot.answerCallbackQuery(callbackQuery.id, { text: 'Invalid option' });
-            return;
-        }
+        console.log(`[DEBUG] Callback received: ${callbackData}`);
         
-        const pendingKey = parts[1];
-        const target = parts[2];
-        const messageData = pendingMessages.get(pendingKey);
+        // Parse callback data: format is "uniqueId_target"
+        const parts = callbackData.split('_');
+        const target = parts.pop(); // Last part is the target
+        const uniqueId = parts.join('_'); // Everything else is the unique ID
+        
+        console.log(`[DEBUG] UniqueId: ${uniqueId}, Target: ${target}`);
+        
+        const messageData = pendingMessages.get(uniqueId);
         
         if (!messageData) {
-            await telegramBot.answerCallbackQuery(callbackQuery.id, { text: '❌ Expired' });
+            await telegramBot.answerCallbackQuery(callbackQuery.id, { text: '❌ Message expired or already processed!' });
             await telegramBot.editMessageText('❌ This message has expired.', {
                 chat_id: chatId,
                 message_id: messageId
@@ -474,7 +475,7 @@ function initTelegramBot() {
         }
         
         await telegramBot.answerCallbackQuery(callbackQuery.id, { text: '⏳ Processing...' });
-        pendingMessages.delete(pendingKey);
+        pendingMessages.delete(uniqueId);
         
         if (target === 'cancel') {
             await telegramBot.editMessageText('❌ Cancelled.', {
