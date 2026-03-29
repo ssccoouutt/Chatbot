@@ -71,7 +71,7 @@ function escapeHtml(text) {
         .replace(/>/g, '&gt;');
 }
 
-// PROPER NESTED FORMATTING WITH BLOCKQUOTE ENTITY SUPPORT
+// PROPER NESTED FORMATTING WITH BLOCKQUOTE SUPPORT
 function applyFormatting(text, entities) {
     if (!text) return '';
     
@@ -186,13 +186,15 @@ function applyFormatting(text, entities) {
                 closeTag = '</a>';
                 break;
             case 'url':
-                openTag = `<a href="${escapeHtml(entityContent)}">`;
-                closeTag = '</a>';
+                // DON'T wrap URLs - keep them as plain text (no <a> tags)
+                openTag = '';
+                closeTag = '';
+                console.log(`[FORMATTING DEBUG] URL entity found, keeping as plain text`);
                 break;
             case 'blockquote':
                 openTag = '<blockquote>';
                 closeTag = '</blockquote>';
-                console.log(`[FORMATTING DEBUG] Processing BLOCKQUOTE entity, content length: ${entityContent.length}`);
+                console.log(`[FORMATTING DEBUG] Processing BLOCKQUOTE entity`);
                 break;
             default:
                 openTag = '';
@@ -268,9 +270,9 @@ function applyFormattingSimple(text, entities) {
                 closeTag = '</a>';
                 break;
             case 'url':
-                const urlContent = result.substring(entity.offset, entity.offset + entity.length);
-                openTag = `<a href="${escapeHtml(urlContent)}">`;
-                closeTag = '</a>';
+                // DON'T wrap URLs - keep as plain text
+                openTag = '';
+                closeTag = '';
                 break;
             case 'blockquote':
                 openTag = '<blockquote>';
