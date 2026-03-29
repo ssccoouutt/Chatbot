@@ -35,7 +35,7 @@ const RATE_LIMIT_DELAY = 3000;
 
 // ===== STATE =====
 let telegrafBot = null;
-let sendBot = null; // For sending to channel
+let sendBot = null;
 let whatsappSock = null;
 let isTelegramActive = false;
 const pendingMessages = new Map();
@@ -63,19 +63,31 @@ function cleanWhitespace(text) {
     return text.trim();
 }
 
-// Convert Telegram entities to HTML (like Python's apply_telegram_formatting)
+function escapeHtml(text) {
+    if (!text) return text;
+    return text
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+}
+
+// Convert Telegram entities to HTML
 function entitiesToHTML(text, entities) {
     if (!text) return text;
-    if (!entities || entities.length === 0) return text;
+    if (!entities || entities.length === 0) return escapeHtml(text);
     
-    // Sort entities by offset in reverse order
+    let result = escapeHtml(text);
     const sortedEntities = [...entities].sort((a, b) => b.offset - a.offset);
-    let result = text;
     
     for (const entity of sortedEntities) {
         const start = entity.offset;
         const end = start + entity.length;
-        const content = text.substring(start, end);
+        
+        if (start >= result.length || end > result.length) continue;
+        
+        const content = result.substring(start, end);
         
         let htmlTag = '';
         let closeTag = '';
@@ -106,7 +118,7 @@ function entitiesToHTML(text, entities) {
                 closeTag = '</pre>';
                 break;
             case 'text_link':
-                htmlTag = `<a href="${entity.url}">`;
+                htmlTag = `<a href="${escapeHtml(entity.url)}">`;
                 closeTag = '</a>';
                 break;
             case 'spoiler':
@@ -149,6 +161,8 @@ function entitiesToWhatsApp(text, entities) {
     for (const entity of sortedEntities) {
         const start = entity.offset;
         const end = start + entity.length;
+        if (start >= textArray.length || end > textArray.length) continue;
+        
         const content = cleanText.substring(start, end);
         
         let prefix = '', suffix = '';
@@ -366,12 +380,9 @@ async function sendToAllDestinations(messageData) {
     return allSuccess;
 }
 
-// ===== TELEGRAM BOT HANDLER (using Telegraf for receiving, node-telegram-bot-api for sending) =====
+// ===== TELEGRAM BOT HANDLER =====
 function initTelegramBot() {
-    // Create sender bot (node-telegram-bot-api for reliable image sending)
     sendBot = new TelegramBot(TELEGRAM_BOT_TOKEN, { polling: false });
-    
-    // Create receiver bot (Telegraf for proper entity parsing)
     telegrafBot = new Telegraf(TELEGRAM_BOT_TOKEN);
     
     console.log('🤖 Telegram Bot Started!');
@@ -380,7 +391,6 @@ function initTelegramBot() {
     console.log(`📺 WhatsApp Channel: ${WHATSAPP_CHANNEL}`);
     console.log('✅ Bot is ready!\n');
     
-    // Handle /start command
     telegrafBot.command('start', (ctx) => {
         const helpMessage = 
             `🤖 *WhatsApp Forwarder Bot*\n\n` +
@@ -396,35 +406,24 @@ function initTelegramBot() {
         ctx.reply(helpMessage, { parse_mode: 'Markdown' });
     });
     
-    // Handle text messages
     telegrafBot.on('text', async (ctx) => {
-        const chatId = ctx.chat.id;
         const message = ctx.message;
         const originalText = message.text;
         const entities = message.entities || [];
         
-        console.log(`\n📝 Text message from ${ctx.from.username || ctx.from.id}`);
-        console.log(`Original: ${originalText.substring(0, 100)}`);
-        console.log(`Entities found: ${entities.length}`);
+        console.log(`\n📝 Text from ${ctx.from.username || ctx.from.id}`);
+        console.log(`Entities: ${entities.length}`);
         
         const formattedForWhatsApp = entitiesToWhatsApp(originalText, entities);
+        const uniqueId = `${ctx.chat.id}_${Date.now()}_${Math.random().toString(36).substr(2, 6)}`;
         
-        const uniqueId = `${chatId}_${Date.now()}_${Math.random().toString(36).substr(2, 6)}`;
-        
-        const messageData = {
+        pendingMessages.set(uniqueId, {
             type: 'text',
             content: formattedForWhatsApp,
             originalText: originalText,
             entities: entities,
             timestamp: Date.now()
-        };
-        
-        pendingMessages.set(uniqueId, messageData);
-        
-        const confirmationMessage = 
-            `📨 New Message\n\n` +
-            `Preview: ${originalText.substring(0, 100)}${originalText.length > 100 ? '...' : ''}\n\n` +
-            `Forward to?`;
+        });
         
         const opts = {
             reply_markup: {
@@ -439,32 +438,27 @@ function initTelegramBot() {
             }
         };
         
-        await ctx.reply(confirmationMessage, opts);
+        await ctx.reply(`📨 New Message\n\nPreview: ${originalText.substring(0, 100)}${originalText.length > 100 ? '...' : ''}\n\nForward to?`, opts);
     });
     
-    // Handle photo messages
     telegrafBot.on('photo', async (ctx) => {
-        const chatId = ctx.chat.id;
         const message = ctx.message;
         const caption = message.caption || '';
         const entities = message.caption_entities || [];
         const photo = message.photo[message.photo.length - 1];
         
         console.log(`\n📸 Photo from ${ctx.from.username || ctx.from.id}`);
-        console.log(`Caption: ${caption.substring(0, 100)}`);
-        console.log(`Entities found: ${entities.length}`);
+        console.log(`Entities: ${entities.length}`);
         
         try {
-            // Get file link using Telegraf
             const fileLink = await ctx.telegram.getFileLink(photo.file_id);
             const response = await axios.get(fileLink, { responseType: 'arraybuffer' });
             const buffer = Buffer.from(response.data);
             
             const formattedCaption = entitiesToWhatsApp(caption, entities);
+            const uniqueId = `${ctx.chat.id}_${Date.now()}_${Math.random().toString(36).substr(2, 6)}`;
             
-            const uniqueId = `${chatId}_${Date.now()}_${Math.random().toString(36).substr(2, 6)}`;
-            
-            const messageData = {
+            pendingMessages.set(uniqueId, {
                 type: 'media',
                 mediaType: 'photo',
                 buffer: buffer,
@@ -473,17 +467,7 @@ function initTelegramBot() {
                 originalCaption: caption,
                 captionEntities: entities,
                 timestamp: Date.now()
-            };
-            
-            pendingMessages.set(uniqueId, messageData);
-            
-            const previewText = caption.length > 100 ? caption.substring(0, 100) + '...' : caption || '[No caption]';
-            const fileSizeInfo = ` (${(buffer.length / 1024 / 1024).toFixed(2)}MB)`;
-            
-            const confirmationMessage = 
-                `📨 New Photo\n\n` +
-                `Caption: ${previewText}${fileSizeInfo}\n\n` +
-                `Forward to?`;
+            });
             
             const opts = {
                 reply_markup: {
@@ -498,25 +482,21 @@ function initTelegramBot() {
                 }
             };
             
-            await ctx.reply(confirmationMessage, opts);
-            
+            await ctx.reply(`📨 New Photo\n\nCaption: ${caption.substring(0, 100)}${caption.length > 100 ? '...' : ''}\n\nForward to?`, opts);
         } catch (error) {
-            console.error('❌ Error processing photo:', error.message);
+            console.error('Error processing photo:', error.message);
             await ctx.reply('❌ Failed to process image.');
         }
     });
     
-    // Handle video messages
     telegrafBot.on('video', async (ctx) => {
-        const chatId = ctx.chat.id;
         const message = ctx.message;
         const caption = message.caption || '';
         const entities = message.caption_entities || [];
         const video = message.video;
         
         console.log(`\n🎥 Video from ${ctx.from.username || ctx.from.id}`);
-        console.log(`Caption: ${caption.substring(0, 100)}`);
-        console.log(`Entities found: ${entities.length}`);
+        console.log(`Entities: ${entities.length}`);
         
         try {
             const fileLink = await ctx.telegram.getFileLink(video.file_id);
@@ -524,10 +504,9 @@ function initTelegramBot() {
             const buffer = Buffer.from(response.data);
             
             const formattedCaption = entitiesToWhatsApp(caption, entities);
+            const uniqueId = `${ctx.chat.id}_${Date.now()}_${Math.random().toString(36).substr(2, 6)}`;
             
-            const uniqueId = `${chatId}_${Date.now()}_${Math.random().toString(36).substr(2, 6)}`;
-            
-            const messageData = {
+            pendingMessages.set(uniqueId, {
                 type: 'media',
                 mediaType: 'video',
                 buffer: buffer,
@@ -536,17 +515,7 @@ function initTelegramBot() {
                 originalCaption: caption,
                 captionEntities: entities,
                 timestamp: Date.now()
-            };
-            
-            pendingMessages.set(uniqueId, messageData);
-            
-            const previewText = caption.length > 100 ? caption.substring(0, 100) + '...' : caption || '[No caption]';
-            const fileSizeInfo = ` (${(buffer.length / 1024 / 1024).toFixed(2)}MB)`;
-            
-            const confirmationMessage = 
-                `📨 New Video\n\n` +
-                `Caption: ${previewText}${fileSizeInfo}\n\n` +
-                `Forward to?`;
+            });
             
             const opts = {
                 reply_markup: {
@@ -561,20 +530,15 @@ function initTelegramBot() {
                 }
             };
             
-            await ctx.reply(confirmationMessage, opts);
-            
+            await ctx.reply(`📨 New Video\n\nCaption: ${caption.substring(0, 100)}${caption.length > 100 ? '...' : ''}\n\nForward to?`, opts);
         } catch (error) {
-            console.error('❌ Error processing video:', error.message);
+            console.error('Error processing video:', error.message);
             await ctx.reply('❌ Failed to process video.');
         }
     });
     
-    // Handle callback queries
     telegrafBot.action(/.+/, async (ctx) => {
         const callbackData = ctx.callbackQuery.data;
-        const messageId = ctx.callbackQuery.message.message_id;
-        const chatId = ctx.chat.id;
-        
         const parts = callbackData.split('_');
         const target = parts.pop();
         const uniqueId = parts.join('_');
@@ -622,7 +586,6 @@ function initTelegramBot() {
         }
     });
     
-    // Launch telegraf bot
     telegrafBot.launch();
 }
 
@@ -704,20 +667,15 @@ async function startBot() {
     });
 }
 
-// Graceful shutdown
 process.on('SIGINT', async () => {
     console.log('\n🛑 Shutting down...');
-    if (telegrafBot) {
-        telegrafBot.stop();
-    }
+    if (telegrafBot) telegrafBot.stop();
     process.exit(0);
 });
 
 process.on('SIGTERM', async () => {
     console.log('\n🛑 Shutting down...');
-    if (telegrafBot) {
-        telegrafBot.stop();
-    }
+    if (telegrafBot) telegrafBot.stop();
     process.exit(0);
 });
 
