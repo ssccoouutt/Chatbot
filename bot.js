@@ -282,8 +282,45 @@ async function sendToTelegramChannel(messageData) {
                 parseMode: 'markdown'
             });
         } else if (messageData.type === 'media' && messageData.originalMessage) {
-            // FORWARD the original message directly - this preserves everything!
-            await messageData.originalMessage.forwardTo(channelEntity);
+            const originalMsg = messageData.originalMessage;
+            const caption = messageData.originalCaption || '';
+            
+            // Copy the media using file_id (no forward tag)
+            if (originalMsg.photo) {
+                await telegramClient.sendFile(channelEntity, {
+                    file: originalMsg.photo.id,
+                    caption: caption
+                });
+            } else if (originalMsg.video) {
+                await telegramClient.sendFile(channelEntity, {
+                    file: originalMsg.video.id,
+                    caption: caption,
+                    supportsStreaming: true
+                });
+            } else if (originalMsg.document) {
+                const fileNameAttr = originalMsg.document.attributes.find(
+                    a => a.className === 'DocumentAttributeFilename'
+                );
+                await telegramClient.sendFile(channelEntity, {
+                    file: originalMsg.document.id,
+                    caption: caption,
+                    fileName: fileNameAttr?.fileName || 'file'
+                });
+            } else if (originalMsg.audio) {
+                await telegramClient.sendFile(channelEntity, {
+                    file: originalMsg.audio.id,
+                    caption: caption
+                });
+            } else if (originalMsg.voice) {
+                await telegramClient.sendFile(channelEntity, {
+                    file: originalMsg.voice.id,
+                    caption: caption
+                });
+            } else if (originalMsg.sticker) {
+                await telegramClient.sendFile(channelEntity, {
+                    file: originalMsg.sticker.id
+                });
+            }
         }
         log('INFO', `Sent to Telegram channel: ${TELEGRAM_CHANNEL_ID}`);
         return true;
@@ -654,7 +691,7 @@ async function startTelegramBridge() {
                     type: 'text',
                     content: formattedText,
                     originalText: originalText,
-                    originalMessage: msg, // Store the original message object for forwarding
+                    originalMessage: msg,
                     timestamp: Date.now()
                 };
                 
@@ -692,7 +729,7 @@ async function startTelegramBridge() {
                             fileName: fileName,
                             caption: formattedText,
                             originalCaption: originalText,
-                            originalMessage: msg, // Store original for forwarding
+                            originalMessage: msg,
                             timestamp: Date.now()
                         };
                     } else {
