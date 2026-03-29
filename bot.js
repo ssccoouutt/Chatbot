@@ -61,10 +61,9 @@ function cleanWhitespace(text) {
     return text.trim();
 }
 
-// Convert Telegram message entities to HTML for Telegram channel (preserves formatting)
-function convertToTelegramHTML(text, entities) {
+// Convert Telegram message entities to HTML for Telegram channel
+function convertEntitiesToHTML(text, entities) {
     if (!text) return text;
-    
     if (!entities || entities.length === 0) return text;
     
     // Sort entities in reverse order to apply from end to start
@@ -119,6 +118,35 @@ function convertToTelegramHTML(text, entities) {
         const replacement = htmlTag + content + closeTag;
         result = result.substring(0, start) + replacement + result.substring(end);
     }
+    
+    return result;
+}
+
+// Convert markdown symbols to HTML for Telegram channel (for messages without entities)
+function markdownToHTML(text) {
+    if (!text) return text;
+    
+    let result = text;
+    
+    // Bold: **text** or __text__
+    result = result.replace(/\*\*(.*?)\*\*/g, '<b>$1</b>');
+    result = result.replace(/__(.*?)__/g, '<b>$1</b>');
+    
+    // Italic: *text* or _text_ (but not if it's part of a word)
+    result = result.replace(/\*(.*?)\*/g, '<i>$1</i>');
+    result = result.replace(/_(.*?)_/g, '<i>$1</i>');
+    
+    // Strikethrough: ~~text~~
+    result = result.replace(/~~(.*?)~~/g, '<s>$1</s>');
+    
+    // Code: `text`
+    result = result.replace(/`(.*?)`/g, '<code>$1</code>');
+    
+    // Pre/multiline code: ```text```
+    result = result.replace(/```(.*?)```/gs, '<pre>$1</pre>');
+    
+    // Links: [text](url)
+    result = result.replace(/\[(.*?)\]\((.*?)\)/g, '<a href="$2">$1</a>');
     
     return result;
 }
@@ -229,18 +257,42 @@ async function sendToTelegramChannel(messageData) {
         if (!telegramBot) return false;
         
         if (messageData.type === 'text') {
-            // Convert to HTML to preserve formatting
-            const formattedText = convertToTelegramHTML(messageData.originalText, messageData.entities);
+            // Try to use entities first, fallback to markdown conversion
+            let formattedText = messageData.originalText;
+            
+            if (messageData.entities && messageData.entities.length > 0) {
+                formattedText = convertEntitiesToHTML(messageData.originalText, messageData.entities);
+                console.log(`[DEBUG] Used entities for formatting`);
+            } else {
+                formattedText = markdownToHTML(messageData.originalText);
+                console.log(`[DEBUG] Used markdown conversion for formatting`);
+            }
+            
+            console.log(`[DEBUG] Original text: ${messageData.originalText.substring(0, 100)}`);
+            console.log(`[DEBUG] Formatted text: ${formattedText.substring(0, 100)}`);
+            
             await telegramBot.sendMessage(TELEGRAM_CHANNEL_ID, formattedText, {
-                parse_mode: 'HTML'
+                parse_mode: 'HTML',
+                disable_web_page_preview: false
             });
             console.log(`✅ Text sent to Telegram channel with formatting preserved`);
         } else if (messageData.type === 'media') {
             const caption = messageData.originalCaption || '';
-            // Format caption with HTML
-            const formattedCaption = convertToTelegramHTML(caption, messageData.captionEntities);
-            const mediaBuffer = messageData.buffer;
             
+            // Format caption
+            let formattedCaption = caption;
+            if (messageData.captionEntities && messageData.captionEntities.length > 0) {
+                formattedCaption = convertEntitiesToHTML(caption, messageData.captionEntities);
+                console.log(`[DEBUG] Used entities for caption formatting`);
+            } else {
+                formattedCaption = markdownToHTML(caption);
+                console.log(`[DEBUG] Used markdown conversion for caption formatting`);
+            }
+            
+            console.log(`[DEBUG] Original caption: ${caption.substring(0, 100)}`);
+            console.log(`[DEBUG] Formatted caption: ${formattedCaption.substring(0, 100)}`);
+            
+            const mediaBuffer = messageData.buffer;
             const ext = messageData.mediaType === 'photo' ? 'jpg' : 
                        messageData.mediaType === 'video' ? 'mp4' : 'bin';
             const tempFilePath = path.join(TEMP_DIR, `send_tg_${Date.now()}.${ext}`);
@@ -422,6 +474,7 @@ function initTelegramBot() {
             
             console.log(`\n📝 Text message from ${msg.from.username || msg.from.id}`);
             console.log(`Original: ${originalText.substring(0, 100)}`);
+            console.log(`Entities found: ${entities.length}`);
             
             // Convert to WhatsApp format
             const formattedForWhatsApp = convertTelegramToWhatsApp(originalText, entities);
@@ -430,7 +483,7 @@ function initTelegramBot() {
                 type: 'text',
                 content: formattedForWhatsApp,
                 originalText: originalText,
-                entities: entities,  // Store entities for Telegram HTML conversion
+                entities: entities,
                 timestamp: Date.now()
             };
             
@@ -466,6 +519,7 @@ function initTelegramBot() {
             
             console.log(`\n📸 Photo from ${msg.from.username || msg.from.id}`);
             console.log(`Caption: ${caption.substring(0, 100)}`);
+            console.log(`Entities found: ${entities.length}`);
             
             try {
                 const photo = msg.photo[msg.photo.length - 1];
@@ -483,7 +537,7 @@ function initTelegramBot() {
                     size: buffer.length,
                     caption: formattedCaption,
                     originalCaption: caption,
-                    captionEntities: entities,  // Store entities for Telegram HTML conversion
+                    captionEntities: entities,
                     timestamp: Date.now()
                 };
                 
@@ -525,6 +579,7 @@ function initTelegramBot() {
             
             console.log(`\n🎥 Video from ${msg.from.username || msg.from.id}`);
             console.log(`Caption: ${caption.substring(0, 100)}`);
+            console.log(`Entities found: ${entities.length}`);
             
             try {
                 const video = msg.video;
@@ -542,7 +597,7 @@ function initTelegramBot() {
                     size: buffer.length,
                     caption: formattedCaption,
                     originalCaption: caption,
-                    captionEntities: entities,  // Store entities for Telegram HTML conversion
+                    captionEntities: entities,
                     timestamp: Date.now()
                 };
                 
