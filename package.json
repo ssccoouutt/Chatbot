@@ -1,7 +1,7 @@
 {
   "name": "telegram-whatsapp-forwarder",
   "version": "1.0.0",
-  "description": "Telegram to WhatsApp message forwarder bot",
+  "description": "Telegram to WhatsApp message forwarder bot with full formatting support",
   "main": "bot.js",
   "scripts": {
     "start": "node bot.js"
@@ -12,7 +12,8 @@
     "pino": "^8.14.1",
     "qrcode-terminal": "^0.12.0",
     "axios": "^1.6.0",
-    "node-telegram-bot-api": "^0.64.0",
-    "sharp": "^0.32.0"
+    "sharp": "^0.32.0",
+    "telegraf": "^4.15.0",
+    "node-telegram-bot-api": "^0.64.0"
   }
 }
