@@ -170,19 +170,27 @@ async function downloadMedia(client, message) {
         
         for (let attempt = 1; attempt <= 3; attempt++) {
             try {
-                const tempFile = path.join(TEMP_DIR, `tg_${message.id}_${Date.now()}_${attempt}.tmp`);
+                const tempFile = path.join(TEMP_DIR, `tg_${message.id}_${Date.now()}_${attempt}.jpg`);
                 
                 if (!fs.existsSync(TEMP_DIR)) {
                     fs.mkdirSync(TEMP_DIR, { recursive: true });
                 }
                 
                 console.log(`[DEBUG] Downloading media attempt ${attempt}...`);
+                
                 await client.downloadMedia(message, { outputFile: tempFile });
                 
-                if (!fs.existsSync(tempFile)) throw new Error('File not created');
+                // Wait a moment for file to be written
+                await new Promise(resolve => setTimeout(resolve, 500));
+                
+                if (!fs.existsSync(tempFile)) {
+                    throw new Error('File not created');
+                }
                 
                 const stats = fs.statSync(tempFile);
-                if (stats.size === 0) throw new Error('File is empty');
+                if (stats.size === 0) {
+                    throw new Error('File is empty');
+                }
                 
                 const buffer = fs.readFileSync(tempFile);
                 fs.unlinkSync(tempFile);
@@ -211,12 +219,15 @@ async function downloadMedia(client, message) {
                 
             } catch (err) {
                 console.log(`[DEBUG] Download attempt ${attempt} failed:`, err.message);
+                
                 try {
                     const tempFile = path.join(TEMP_DIR, `tg_${message.id}_attempt_${attempt}`);
                     if (fs.existsSync(tempFile)) fs.unlinkSync(tempFile);
                 } catch (cleanupError) {}
                 
-                if (attempt < 3) await new Promise(resolve => setTimeout(resolve, attempt * 2000));
+                if (attempt < 3) {
+                    await new Promise(resolve => setTimeout(resolve, attempt * 2000));
+                }
             }
         }
         return null;
@@ -301,36 +312,33 @@ async function sendToTelegramChannel(messageData) {
             console.log(`[DEBUG] Sending media - Type: ${messageData.mediaType}, Size: ${mediaBuffer.length} bytes`);
             console.log(`[DEBUG] Caption: ${caption.substring(0, 100)}`);
             
-            // Send using buffer directly - this works reliably
+            // CRITICAL: Use the correct method for each media type
             if (messageData.mediaType === 'photo') {
-                console.log(`[DEBUG] Sending as photo`);
-                await telegramClient.sendFile(channelEntity, {
-                    file: mediaBuffer,
-                    caption: caption,
-                    forceDocument: false
+                console.log(`[DEBUG] Sending as photo using sendPhoto`);
+                await telegramClient.sendPhoto(channelEntity, {
+                    photo: mediaBuffer,
+                    caption: caption
                 });
                 console.log(`[DEBUG] Photo sent successfully`);
             } else if (messageData.mediaType === 'video') {
                 console.log(`[DEBUG] Sending as video`);
-                await telegramClient.sendFile(channelEntity, {
-                    file: mediaBuffer,
+                await telegramClient.sendVideo(channelEntity, {
+                    video: mediaBuffer,
                     caption: caption,
-                    forceDocument: false,
                     supportsStreaming: true
                 });
                 console.log(`[DEBUG] Video sent successfully`);
             } else if (messageData.mediaType === 'audio') {
                 console.log(`[DEBUG] Sending as audio`);
-                await telegramClient.sendFile(channelEntity, {
-                    file: mediaBuffer,
-                    caption: caption,
-                    forceDocument: false
+                await telegramClient.sendAudio(channelEntity, {
+                    audio: mediaBuffer,
+                    caption: caption
                 });
                 console.log(`[DEBUG] Audio sent successfully`);
             } else {
                 console.log(`[DEBUG] Sending as document`);
-                await telegramClient.sendFile(channelEntity, {
-                    file: mediaBuffer,
+                await telegramClient.sendDocument(channelEntity, {
+                    document: mediaBuffer,
                     caption: caption,
                     fileName: messageData.fileName || 'file'
                 });
