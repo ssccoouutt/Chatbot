@@ -38,7 +38,7 @@ const WHATSAPP_GROUPS = [
     "120363161222427319@g.us"
 ];
 const WHATSAPP_CHANNEL = "120363405181626845@newsletter";
-const TELEGRAM_CHANNEL_ID = "-1001287988079"; // Use string format
+const TELEGRAM_CHANNEL_ID = "-1001287988079"; // Your corrected channel ID
 
 // ===== CONSTANTS =====
 const TEMP_DIR = path.join(process.cwd(), 'temp');
@@ -195,17 +195,23 @@ async function downloadMedia(client, message) {
                 // Determine MIME type and format
                 let mimeType = 'application/octet-stream';
                 let extension = 'bin';
+                let isImage = false;
+                let isVideo = false;
                 
                 if (message.photo) {
                     mimeType = 'image/jpeg';
                     extension = 'jpg';
+                    isImage = true;
                 } else if (message.video) {
                     mimeType = 'video/mp4';
                     extension = 'mp4';
+                    isVideo = true;
                 } else if (message.document) {
                     mimeType = message.document.mimeType || 'application/octet-stream';
                     const attr = message.document.attributes.find(a => a.className === 'DocumentAttributeFilename');
                     extension = attr?.fileName?.split('.').pop() || 'bin';
+                    isImage = mimeType.startsWith('image/');
+                    isVideo = mimeType.startsWith('video/');
                 } else if (message.audio) {
                     mimeType = message.audio.mimeType || 'audio/mpeg';
                     extension = 'mp3';
@@ -218,7 +224,9 @@ async function downloadMedia(client, message) {
                     buffer,
                     size: stats.size,
                     mimeType,
-                    extension
+                    extension,
+                    isImage,
+                    isVideo
                 };
                 
             } catch (err) {
@@ -287,20 +295,42 @@ async function sendToTelegramChannel(messageData) {
         }
         
         if (messageData.type === 'text') {
-            await telegramClient.sendMessage(channelEntity, { message: messageData.content });
+            // Send text exactly as is, no formatting changes, no forwarded tag
+            await telegramClient.sendMessage(channelEntity, { 
+                message: messageData.content
+            });
         } else if (messageData.type === 'media') {
             const mediaBuffer = messageData.buffer;
             const caption = messageData.caption || '';
             
-            if (messageData.mediaType === 'photo') {
-                await telegramClient.sendFile(channelEntity, { file: mediaBuffer, caption: caption });
-            } else if (messageData.mediaType === 'video') {
-                await telegramClient.sendFile(channelEntity, { file: mediaBuffer, caption: caption });
-            } else {
+            // Send as proper media type based on content
+            if (messageData.mediaType === 'photo' || (messageData.mimeType && messageData.mimeType.startsWith('image/'))) {
+                // Send as photo/image
                 await telegramClient.sendFile(channelEntity, { 
                     file: mediaBuffer, 
                     caption: caption,
-                    fileName: messageData.fileName 
+                    forceDocument: false  // This ensures it sends as photo, not document
+                });
+            } else if (messageData.mediaType === 'video' || (messageData.mimeType && messageData.mimeType.startsWith('video/'))) {
+                // Send as video
+                await telegramClient.sendFile(channelEntity, { 
+                    file: mediaBuffer, 
+                    caption: caption,
+                    forceDocument: false  // This ensures it sends as video, not document
+                });
+            } else if (messageData.mediaType === 'audio' || (messageData.mimeType && messageData.mimeType.startsWith('audio/'))) {
+                // Send as audio
+                await telegramClient.sendFile(channelEntity, { 
+                    file: mediaBuffer, 
+                    caption: caption,
+                    forceDocument: false
+                });
+            } else {
+                // For other file types (documents, etc.)
+                await telegramClient.sendFile(channelEntity, { 
+                    file: mediaBuffer, 
+                    caption: caption,
+                    fileName: messageData.fileName || 'file'
                 });
             }
         }
@@ -680,11 +710,12 @@ async function startTelegramBridge() {
                     if (mediaResult) {
                         let fileName = 'file';
                         let mediaType = 'document';
+                        let mimeType = mediaResult.mimeType;
                         
-                        if (msg.photo) { 
+                        if (msg.photo || (mimeType && mimeType.startsWith('image/'))) { 
                             mediaType = 'photo'; 
                             fileName = `image_${msg.id}.jpg`; 
-                        } else if (msg.video) { 
+                        } else if (msg.video || (mimeType && mimeType.startsWith('video/'))) { 
                             mediaType = 'video'; 
                             fileName = `video_${msg.id}.mp4`; 
                         } else if (msg.document) {
