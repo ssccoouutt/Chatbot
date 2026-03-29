@@ -7,6 +7,7 @@ const {
 const pino = require("pino");
 const { Boom } = require("@hapi/boom");
 const qrcode = require("qrcode-terminal");
+const { Telegraf } = require('telegraf');
 const TelegramBot = require('node-telegram-bot-api');
 const path = require("path");
 const fs = require('fs');
@@ -33,7 +34,8 @@ const TEMP_DIR = path.join(process.cwd(), 'temp');
 const RATE_LIMIT_DELAY = 3000;
 
 // ===== STATE =====
-let telegramBot = null;
+let telegrafBot = null;
+let sendBot = null; // For sending to channel
 let whatsappSock = null;
 let isTelegramActive = false;
 const pendingMessages = new Map();
@@ -61,12 +63,12 @@ function cleanWhitespace(text) {
     return text.trim();
 }
 
-// Convert Telegram message entities to HTML for Telegram channel
-function convertEntitiesToHTML(text, entities) {
+// Convert Telegram entities to HTML (like Python's apply_telegram_formatting)
+function entitiesToHTML(text, entities) {
     if (!text) return text;
     if (!entities || entities.length === 0) return text;
     
-    // Sort entities in reverse order to apply from end to start
+    // Sort entities by offset in reverse order
     const sortedEntities = [...entities].sort((a, b) => b.offset - a.offset);
     let result = text;
     
@@ -122,37 +124,8 @@ function convertEntitiesToHTML(text, entities) {
     return result;
 }
 
-// Convert markdown symbols to HTML for Telegram channel (for messages without entities)
-function markdownToHTML(text) {
-    if (!text) return text;
-    
-    let result = text;
-    
-    // Bold: **text** or __text__
-    result = result.replace(/\*\*(.*?)\*\*/g, '<b>$1</b>');
-    result = result.replace(/__(.*?)__/g, '<b>$1</b>');
-    
-    // Italic: *text* or _text_ (but not if it's part of a word)
-    result = result.replace(/\*(.*?)\*/g, '<i>$1</i>');
-    result = result.replace(/_(.*?)_/g, '<i>$1</i>');
-    
-    // Strikethrough: ~~text~~
-    result = result.replace(/~~(.*?)~~/g, '<s>$1</s>');
-    
-    // Code: `text`
-    result = result.replace(/`(.*?)`/g, '<code>$1</code>');
-    
-    // Pre/multiline code: ```text```
-    result = result.replace(/```(.*?)```/gs, '<pre>$1</pre>');
-    
-    // Links: [text](url)
-    result = result.replace(/\[(.*?)\]\((.*?)\)/g, '<a href="$2">$1</a>');
-    
-    return result;
-}
-
-// Convert Telegram to WhatsApp format (from your original script)
-function convertTelegramToWhatsApp(text, entities) {
+// Convert Telegram entities to WhatsApp format
+function entitiesToWhatsApp(text, entities) {
     if (!text) return text;
     
     let cleanText = text;
@@ -161,59 +134,54 @@ function convertTelegramToWhatsApp(text, entities) {
     cleanText = cleanText.replace(/~~/g, '');
     cleanText = cleanText.replace(/`/g, '');
     
-    if (entities && entities.length > 0) {
-        const reversedEntities = [...entities].sort((a, b) => b.offset - a.offset);
-        let textArray = cleanText.split('');
-        
-        for (const entity of reversedEntities) {
-            const start = entity.offset;
-            const end = start + entity.length;
-            const type = entity.type;
-            
-            if (type === 'blockquote') continue;
-            
-            const content = cleanText.substring(start, end);
-            
-            let prefix = '', suffix = '';
-            switch (type) {
-                case 'bold': prefix = '*'; suffix = '*'; break;
-                case 'italic': prefix = '_'; suffix = '_'; break;
-                case 'strikethrough': prefix = '~'; suffix = '~'; break;
-                case 'code':
-                case 'pre': prefix = '```'; suffix = '```'; break;
-                default: continue;
-            }
-            
-            let replacement;
-            if (type === 'pre') {
-                replacement = prefix + content + suffix;
-            } else {
-                const lines = content.split('\n');
-                const wrappedLines = [];
-                for (const line of lines) {
-                    if (line.trim()) {
-                        wrappedLines.push(prefix + line.trim() + suffix);
-                    } else {
-                        wrappedLines.push('');
-                    }
-                }
-                replacement = wrappedLines.join('\n');
-            }
-            
-            textArray.splice(start, end - start, replacement);
-        }
-        
-        let result = textArray.join('');
-        return cleanWhitespace(result);
+    if (!entities || entities.length === 0) {
+        let formatted = cleanText;
+        formatted = formatted.replace(/\*\*(.*?)\*\*/g, '*$1*');
+        formatted = formatted.replace(/__(.*?)__/g, '_$1_');
+        formatted = formatted.replace(/~~(.*?)~~/g, '~$1~');
+        formatted = formatted.replace(/`(.*?)`/g, '```$1```');
+        return cleanWhitespace(formatted);
     }
     
-    let formatted = text;
-    formatted = formatted.replace(/\*\*(.*?)\*\*/g, '*$1*');
-    formatted = formatted.replace(/__(.*?)__/g, '_$1_');
-    formatted = formatted.replace(/~~(.*?)~~/g, '~$1~');
-    formatted = formatted.replace(/`(.*?)`/g, '```$1```');
+    const sortedEntities = [...entities].sort((a, b) => b.offset - a.offset);
+    let textArray = cleanText.split('');
     
-    return cleanWhitespace(formatted);
+    for (const entity of sortedEntities) {
+        const start = entity.offset;
+        const end = start + entity.length;
+        const content = cleanText.substring(start, end);
+        
+        let prefix = '', suffix = '';
+        switch (entity.type) {
+            case 'bold': prefix = '*'; suffix = '*'; break;
+            case 'italic': prefix = '_'; suffix = '_'; break;
+            case 'strikethrough': prefix = '~'; suffix = '~'; break;
+            case 'code': prefix = '```'; suffix = '```'; break;
+            case 'pre': prefix = '```\n'; suffix = '\n```'; break;
+            default: continue;
+        }
+        
+        let replacement;
+        if (entity.type === 'pre') {
+            replacement = prefix + content + suffix;
+        } else {
+            const lines = content.split('\n');
+            const wrappedLines = [];
+            for (const line of lines) {
+                if (line.trim()) {
+                    wrappedLines.push(prefix + line.trim() + suffix);
+                } else {
+                    wrappedLines.push('');
+                }
+            }
+            replacement = wrappedLines.join('\n');
+        }
+        
+        textArray.splice(start, end - start, replacement);
+    }
+    
+    let result = textArray.join('');
+    return cleanWhitespace(result);
 }
 
 // ===== FORWARDING FUNCTIONS =====
@@ -244,7 +212,7 @@ async function sendToWhatsAppChannel(messageData) {
             
             await whatsappSock.sendMessage(WHATSAPP_CHANNEL, messageOptions);
         }
-        console.log(`✅ Sent to WhatsApp channel: ${WHATSAPP_CHANNEL}`);
+        console.log(`✅ Sent to WhatsApp channel`);
         return true;
     } catch (error) {
         console.error(`❌ Failed to send to WhatsApp channel:`, error.message);
@@ -254,74 +222,42 @@ async function sendToWhatsAppChannel(messageData) {
 
 async function sendToTelegramChannel(messageData) {
     try {
-        if (!telegramBot) return false;
+        if (!sendBot) return false;
         
         if (messageData.type === 'text') {
-            // Try to use entities first, fallback to markdown conversion
-            let formattedText = messageData.originalText;
-            
-            if (messageData.entities && messageData.entities.length > 0) {
-                formattedText = convertEntitiesToHTML(messageData.originalText, messageData.entities);
-                console.log(`[DEBUG] Used entities for formatting`);
-            } else {
-                formattedText = markdownToHTML(messageData.originalText);
-                console.log(`[DEBUG] Used markdown conversion for formatting`);
-            }
-            
-            console.log(`[DEBUG] Original text: ${messageData.originalText.substring(0, 100)}`);
-            console.log(`[DEBUG] Formatted text: ${formattedText.substring(0, 100)}`);
-            
-            await telegramBot.sendMessage(TELEGRAM_CHANNEL_ID, formattedText, {
-                parse_mode: 'HTML',
-                disable_web_page_preview: false
+            const formattedText = entitiesToHTML(messageData.originalText, messageData.entities);
+            await sendBot.sendMessage(TELEGRAM_CHANNEL_ID, formattedText, {
+                parse_mode: 'HTML'
             });
-            console.log(`✅ Text sent to Telegram channel with formatting preserved`);
+            console.log(`✅ Text sent to Telegram channel`);
         } else if (messageData.type === 'media') {
             const caption = messageData.originalCaption || '';
-            
-            // Format caption
-            let formattedCaption = caption;
-            if (messageData.captionEntities && messageData.captionEntities.length > 0) {
-                formattedCaption = convertEntitiesToHTML(caption, messageData.captionEntities);
-                console.log(`[DEBUG] Used entities for caption formatting`);
-            } else {
-                formattedCaption = markdownToHTML(caption);
-                console.log(`[DEBUG] Used markdown conversion for caption formatting`);
-            }
-            
-            console.log(`[DEBUG] Original caption: ${caption.substring(0, 100)}`);
-            console.log(`[DEBUG] Formatted caption: ${formattedCaption.substring(0, 100)}`);
+            const formattedCaption = entitiesToHTML(caption, messageData.captionEntities);
             
             const mediaBuffer = messageData.buffer;
-            const ext = messageData.mediaType === 'photo' ? 'jpg' : 
-                       messageData.mediaType === 'video' ? 'mp4' : 'bin';
-            const tempFilePath = path.join(TEMP_DIR, `send_tg_${Date.now()}.${ext}`);
+            const tempFilePath = path.join(TEMP_DIR, `send_tg_${Date.now()}.jpg`);
             fs.writeFileSync(tempFilePath, mediaBuffer);
             
             try {
                 if (messageData.mediaType === 'photo') {
-                    await telegramBot.sendPhoto(TELEGRAM_CHANNEL_ID, tempFilePath, {
+                    await sendBot.sendPhoto(TELEGRAM_CHANNEL_ID, tempFilePath, {
                         caption: formattedCaption,
                         parse_mode: 'HTML'
                     });
-                    console.log(`✅ Photo sent to Telegram channel with formatted caption`);
                 } else if (messageData.mediaType === 'video') {
-                    await telegramBot.sendVideo(TELEGRAM_CHANNEL_ID, tempFilePath, {
+                    await sendBot.sendVideo(TELEGRAM_CHANNEL_ID, tempFilePath, {
                         caption: formattedCaption,
                         parse_mode: 'HTML'
                     });
-                    console.log(`✅ Video sent to Telegram channel with formatted caption`);
                 } else {
-                    await telegramBot.sendDocument(TELEGRAM_CHANNEL_ID, tempFilePath, {
+                    await sendBot.sendDocument(TELEGRAM_CHANNEL_ID, tempFilePath, {
                         caption: formattedCaption,
                         parse_mode: 'HTML'
                     });
-                    console.log(`✅ Document sent to Telegram channel with formatted caption`);
                 }
+                console.log(`✅ ${messageData.mediaType} sent to Telegram channel`);
             } finally {
-                if (fs.existsSync(tempFilePath)) {
-                    fs.unlinkSync(tempFilePath);
-                }
+                if (fs.existsSync(tempFilePath)) fs.unlinkSync(tempFilePath);
             }
         }
         return true;
@@ -367,7 +303,7 @@ async function sendToAllGroups(messageData) {
                     await new Promise(resolve => setTimeout(resolve, RATE_LIMIT_DELAY));
                 }
             } catch (err) {
-                console.error(`Failed to send to group ${target}:`, err.message);
+                console.error(`Failed to send to group:`, err.message);
             }
         }
         
@@ -405,7 +341,7 @@ async function sendToOwnChat(messageData) {
             
             await whatsappSock.sendMessage(jid, messageOptions);
         }
-        console.log(`✅ Sent to own chat: ${WHATSAPP_NUMBER}`);
+        console.log(`✅ Sent to own chat`);
         return true;
     } catch (error) {
         console.error(`Failed to send to own chat:`, error.message);
@@ -430,9 +366,13 @@ async function sendToAllDestinations(messageData) {
     return allSuccess;
 }
 
-// ===== TELEGRAM BOT HANDLER =====
+// ===== TELEGRAM BOT HANDLER (using Telegraf for receiving, node-telegram-bot-api for sending) =====
 function initTelegramBot() {
-    telegramBot = new TelegramBot(TELEGRAM_BOT_TOKEN, { polling: true });
+    // Create sender bot (node-telegram-bot-api for reliable image sending)
+    sendBot = new TelegramBot(TELEGRAM_BOT_TOKEN, { polling: false });
+    
+    // Create receiver bot (Telegraf for proper entity parsing)
+    telegrafBot = new Telegraf(TELEGRAM_BOT_TOKEN);
     
     console.log('🤖 Telegram Bot Started!');
     console.log(`📢 Forwarding to channel: ${TELEGRAM_CHANNEL_ID}`);
@@ -441,8 +381,7 @@ function initTelegramBot() {
     console.log('✅ Bot is ready!\n');
     
     // Handle /start command
-    telegramBot.onText(/\/start/, (msg) => {
-        const chatId = msg.chat.id;
+    telegrafBot.command('start', (ctx) => {
         const helpMessage = 
             `🤖 *WhatsApp Forwarder Bot*\n\n` +
             `Send any message here and choose where to forward it.\n\n` +
@@ -454,46 +393,96 @@ function initTelegramBot() {
             `• 🌟 *ALL* - Send to all destinations\n` +
             `• ❌ *Cancel* - Don't forward`;
         
-        telegramBot.sendMessage(chatId, helpMessage, { parse_mode: 'Markdown' });
+        ctx.reply(helpMessage, { parse_mode: 'Markdown' });
     });
     
-    // Handle all messages
-    telegramBot.on('message', async (msg) => {
-        // Skip if it's a command or callback query
-        if (msg.text && msg.text.startsWith('/')) return;
-        if (msg.callback_query) return;
-        if (!msg.text && !msg.photo && !msg.video && !msg.document) return;
+    // Handle text messages
+    telegrafBot.on('text', async (ctx) => {
+        const chatId = ctx.chat.id;
+        const message = ctx.message;
+        const originalText = message.text;
+        const entities = message.entities || [];
         
-        const chatId = msg.chat.id;
+        console.log(`\n📝 Text message from ${ctx.from.username || ctx.from.id}`);
+        console.log(`Original: ${originalText.substring(0, 100)}`);
+        console.log(`Entities found: ${entities.length}`);
+        
+        const formattedForWhatsApp = entitiesToWhatsApp(originalText, entities);
+        
         const uniqueId = `${chatId}_${Date.now()}_${Math.random().toString(36).substr(2, 6)}`;
         
-        // Handle TEXT messages
-        if (msg.text) {
-            const originalText = msg.text;
-            const entities = msg.entities || [];
+        const messageData = {
+            type: 'text',
+            content: formattedForWhatsApp,
+            originalText: originalText,
+            entities: entities,
+            timestamp: Date.now()
+        };
+        
+        pendingMessages.set(uniqueId, messageData);
+        
+        const confirmationMessage = 
+            `📨 New Message\n\n` +
+            `Preview: ${originalText.substring(0, 100)}${originalText.length > 100 ? '...' : ''}\n\n` +
+            `Forward to?`;
+        
+        const opts = {
+            reply_markup: {
+                inline_keyboard: [
+                    [{ text: `📺 WhatsApp Channel`, callback_data: `${uniqueId}_channel` }],
+                    [{ text: `🌐 Telegram Channel`, callback_data: `${uniqueId}_telegram` }],
+                    [{ text: `👥 ALL GROUPS (${WHATSAPP_GROUPS.length})`, callback_data: `${uniqueId}_groups` }],
+                    [{ text: `📱 Own Chat`, callback_data: `${uniqueId}_own` }],
+                    [{ text: `🌟 ALL DESTINATIONS`, callback_data: `${uniqueId}_all` }],
+                    [{ text: `❌ Cancel`, callback_data: `${uniqueId}_cancel` }]
+                ]
+            }
+        };
+        
+        await ctx.reply(confirmationMessage, opts);
+    });
+    
+    // Handle photo messages
+    telegrafBot.on('photo', async (ctx) => {
+        const chatId = ctx.chat.id;
+        const message = ctx.message;
+        const caption = message.caption || '';
+        const entities = message.caption_entities || [];
+        const photo = message.photo[message.photo.length - 1];
+        
+        console.log(`\n📸 Photo from ${ctx.from.username || ctx.from.id}`);
+        console.log(`Caption: ${caption.substring(0, 100)}`);
+        console.log(`Entities found: ${entities.length}`);
+        
+        try {
+            // Get file link using Telegraf
+            const fileLink = await ctx.telegram.getFileLink(photo.file_id);
+            const response = await axios.get(fileLink, { responseType: 'arraybuffer' });
+            const buffer = Buffer.from(response.data);
             
-            console.log(`\n📝 Text message from ${msg.from.username || msg.from.id}`);
-            console.log(`Original: ${originalText.substring(0, 100)}`);
-            console.log(`Entities found: ${entities.length}`);
+            const formattedCaption = entitiesToWhatsApp(caption, entities);
             
-            // Convert to WhatsApp format
-            const formattedForWhatsApp = convertTelegramToWhatsApp(originalText, entities);
+            const uniqueId = `${chatId}_${Date.now()}_${Math.random().toString(36).substr(2, 6)}`;
             
             const messageData = {
-                type: 'text',
-                content: formattedForWhatsApp,
-                originalText: originalText,
-                entities: entities,
+                type: 'media',
+                mediaType: 'photo',
+                buffer: buffer,
+                size: buffer.length,
+                caption: formattedCaption,
+                originalCaption: caption,
+                captionEntities: entities,
                 timestamp: Date.now()
             };
             
             pendingMessages.set(uniqueId, messageData);
             
-            const previewText = originalText.length > 100 ? originalText.substring(0, 100) + '...' : originalText;
+            const previewText = caption.length > 100 ? caption.substring(0, 100) + '...' : caption || '[No caption]';
+            const fileSizeInfo = ` (${(buffer.length / 1024 / 1024).toFixed(2)}MB)`;
             
             const confirmationMessage = 
-                `📨 New Message\n\n` +
-                `Preview: ${previewText}\n\n` +
+                `📨 New Photo\n\n` +
+                `Caption: ${previewText}${fileSizeInfo}\n\n` +
                 `Forward to?`;
             
             const opts = {
@@ -509,135 +498,82 @@ function initTelegramBot() {
                 }
             };
             
-            await telegramBot.sendMessage(chatId, confirmationMessage, opts);
+            await ctx.reply(confirmationMessage, opts);
+            
+        } catch (error) {
+            console.error('❌ Error processing photo:', error.message);
+            await ctx.reply('❌ Failed to process image.');
         }
+    });
+    
+    // Handle video messages
+    telegrafBot.on('video', async (ctx) => {
+        const chatId = ctx.chat.id;
+        const message = ctx.message;
+        const caption = message.caption || '';
+        const entities = message.caption_entities || [];
+        const video = message.video;
         
-        // Handle PHOTO messages
-        else if (msg.photo) {
-            const caption = msg.caption || '';
-            const entities = msg.entities || [];
-            
-            console.log(`\n📸 Photo from ${msg.from.username || msg.from.id}`);
-            console.log(`Caption: ${caption.substring(0, 100)}`);
-            console.log(`Entities found: ${entities.length}`);
-            
-            try {
-                const photo = msg.photo[msg.photo.length - 1];
-                const fileLink = await telegramBot.getFileLink(photo.file_id);
-                const response = await axios.get(fileLink, { responseType: 'arraybuffer' });
-                const buffer = Buffer.from(response.data);
-                
-                // Convert caption to WhatsApp format
-                const formattedCaption = convertTelegramToWhatsApp(caption, entities);
-                
-                const messageData = {
-                    type: 'media',
-                    mediaType: 'photo',
-                    buffer: buffer,
-                    size: buffer.length,
-                    caption: formattedCaption,
-                    originalCaption: caption,
-                    captionEntities: entities,
-                    timestamp: Date.now()
-                };
-                
-                pendingMessages.set(uniqueId, messageData);
-                
-                const previewText = caption.length > 100 ? caption.substring(0, 100) + '...' : caption || '[No caption]';
-                const fileSizeInfo = ` (${(buffer.length / 1024 / 1024).toFixed(2)}MB)`;
-                
-                const confirmationMessage = 
-                    `📨 New Photo\n\n` +
-                    `Caption: ${previewText}${fileSizeInfo}\n\n` +
-                    `Forward to?`;
-                
-                const opts = {
-                    reply_markup: {
-                        inline_keyboard: [
-                            [{ text: `📺 WhatsApp Channel`, callback_data: `${uniqueId}_channel` }],
-                            [{ text: `🌐 Telegram Channel`, callback_data: `${uniqueId}_telegram` }],
-                            [{ text: `👥 ALL GROUPS (${WHATSAPP_GROUPS.length})`, callback_data: `${uniqueId}_groups` }],
-                            [{ text: `📱 Own Chat`, callback_data: `${uniqueId}_own` }],
-                            [{ text: `🌟 ALL DESTINATIONS`, callback_data: `${uniqueId}_all` }],
-                            [{ text: `❌ Cancel`, callback_data: `${uniqueId}_cancel` }]
-                        ]
-                    }
-                };
-                
-                await telegramBot.sendMessage(chatId, confirmationMessage, opts);
-                
-            } catch (error) {
-                console.error('❌ Error processing photo:', error.message);
-                await telegramBot.sendMessage(chatId, '❌ Failed to process image.');
-            }
-        }
+        console.log(`\n🎥 Video from ${ctx.from.username || ctx.from.id}`);
+        console.log(`Caption: ${caption.substring(0, 100)}`);
+        console.log(`Entities found: ${entities.length}`);
         
-        // Handle VIDEO messages
-        else if (msg.video) {
-            const caption = msg.caption || '';
-            const entities = msg.entities || [];
+        try {
+            const fileLink = await ctx.telegram.getFileLink(video.file_id);
+            const response = await axios.get(fileLink, { responseType: 'arraybuffer' });
+            const buffer = Buffer.from(response.data);
             
-            console.log(`\n🎥 Video from ${msg.from.username || msg.from.id}`);
-            console.log(`Caption: ${caption.substring(0, 100)}`);
-            console.log(`Entities found: ${entities.length}`);
+            const formattedCaption = entitiesToWhatsApp(caption, entities);
             
-            try {
-                const video = msg.video;
-                const fileLink = await telegramBot.getFileLink(video.file_id);
-                const response = await axios.get(fileLink, { responseType: 'arraybuffer' });
-                const buffer = Buffer.from(response.data);
-                
-                // Convert caption to WhatsApp format
-                const formattedCaption = convertTelegramToWhatsApp(caption, entities);
-                
-                const messageData = {
-                    type: 'media',
-                    mediaType: 'video',
-                    buffer: buffer,
-                    size: buffer.length,
-                    caption: formattedCaption,
-                    originalCaption: caption,
-                    captionEntities: entities,
-                    timestamp: Date.now()
-                };
-                
-                pendingMessages.set(uniqueId, messageData);
-                
-                const previewText = caption.length > 100 ? caption.substring(0, 100) + '...' : caption || '[No caption]';
-                const fileSizeInfo = ` (${(buffer.length / 1024 / 1024).toFixed(2)}MB)`;
-                
-                const confirmationMessage = 
-                    `📨 New Video\n\n` +
-                    `Caption: ${previewText}${fileSizeInfo}\n\n` +
-                    `Forward to?`;
-                
-                const opts = {
-                    reply_markup: {
-                        inline_keyboard: [
-                            [{ text: `📺 WhatsApp Channel`, callback_data: `${uniqueId}_channel` }],
-                            [{ text: `🌐 Telegram Channel`, callback_data: `${uniqueId}_telegram` }],
-                            [{ text: `👥 ALL GROUPS (${WHATSAPP_GROUPS.length})`, callback_data: `${uniqueId}_groups` }],
-                            [{ text: `📱 Own Chat`, callback_data: `${uniqueId}_own` }],
-                            [{ text: `🌟 ALL DESTINATIONS`, callback_data: `${uniqueId}_all` }],
-                            [{ text: `❌ Cancel`, callback_data: `${uniqueId}_cancel` }]
-                        ]
-                    }
-                };
-                
-                await telegramBot.sendMessage(chatId, confirmationMessage, opts);
-                
-            } catch (error) {
-                console.error('❌ Error processing video:', error.message);
-                await telegramBot.sendMessage(chatId, '❌ Failed to process video.');
-            }
+            const uniqueId = `${chatId}_${Date.now()}_${Math.random().toString(36).substr(2, 6)}`;
+            
+            const messageData = {
+                type: 'media',
+                mediaType: 'video',
+                buffer: buffer,
+                size: buffer.length,
+                caption: formattedCaption,
+                originalCaption: caption,
+                captionEntities: entities,
+                timestamp: Date.now()
+            };
+            
+            pendingMessages.set(uniqueId, messageData);
+            
+            const previewText = caption.length > 100 ? caption.substring(0, 100) + '...' : caption || '[No caption]';
+            const fileSizeInfo = ` (${(buffer.length / 1024 / 1024).toFixed(2)}MB)`;
+            
+            const confirmationMessage = 
+                `📨 New Video\n\n` +
+                `Caption: ${previewText}${fileSizeInfo}\n\n` +
+                `Forward to?`;
+            
+            const opts = {
+                reply_markup: {
+                    inline_keyboard: [
+                        [{ text: `📺 WhatsApp Channel`, callback_data: `${uniqueId}_channel` }],
+                        [{ text: `🌐 Telegram Channel`, callback_data: `${uniqueId}_telegram` }],
+                        [{ text: `👥 ALL GROUPS (${WHATSAPP_GROUPS.length})`, callback_data: `${uniqueId}_groups` }],
+                        [{ text: `📱 Own Chat`, callback_data: `${uniqueId}_own` }],
+                        [{ text: `🌟 ALL DESTINATIONS`, callback_data: `${uniqueId}_all` }],
+                        [{ text: `❌ Cancel`, callback_data: `${uniqueId}_cancel` }]
+                    ]
+                }
+            };
+            
+            await ctx.reply(confirmationMessage, opts);
+            
+        } catch (error) {
+            console.error('❌ Error processing video:', error.message);
+            await ctx.reply('❌ Failed to process video.');
         }
     });
     
     // Handle callback queries
-    telegramBot.on('callback_query', async (callbackQuery) => {
-        const callbackData = callbackQuery.data;
-        const messageId = callbackQuery.message.message_id;
-        const chatId = callbackQuery.message.chat.id;
+    telegrafBot.action(/.+/, async (ctx) => {
+        const callbackData = ctx.callbackQuery.data;
+        const messageId = ctx.callbackQuery.message.message_id;
+        const chatId = ctx.chat.id;
         
         const parts = callbackData.split('_');
         const target = parts.pop();
@@ -646,22 +582,16 @@ function initTelegramBot() {
         const messageData = pendingMessages.get(uniqueId);
         
         if (!messageData) {
-            await telegramBot.answerCallbackQuery(callbackQuery.id, { text: '❌ Message expired!' });
-            await telegramBot.editMessageText('❌ This message has expired.', {
-                chat_id: chatId,
-                message_id: messageId
-            });
+            await ctx.answerCbQuery('❌ Message expired!');
+            await ctx.editMessageText('❌ This message has expired.');
             return;
         }
         
-        await telegramBot.answerCallbackQuery(callbackQuery.id, { text: '⏳ Processing...' });
+        await ctx.answerCbQuery('⏳ Processing...');
         pendingMessages.delete(uniqueId);
         
         if (target === 'cancel') {
-            await telegramBot.editMessageText('❌ Cancelled.', {
-                chat_id: chatId,
-                message_id: messageId
-            });
+            await ctx.editMessageText('❌ Cancelled.');
             return;
         }
         
@@ -686,17 +616,14 @@ function initTelegramBot() {
         }
         
         if (success) {
-            await telegramBot.editMessageText(`✅ Successfully forwarded to ${targetText}`, {
-                chat_id: chatId,
-                message_id: messageId
-            });
+            await ctx.editMessageText(`✅ Successfully forwarded to ${targetText}`);
         } else {
-            await telegramBot.editMessageText('❌ Failed to forward.', {
-                chat_id: chatId,
-                message_id: messageId
-            });
+            await ctx.editMessageText('❌ Failed to forward.');
         }
     });
+    
+    // Launch telegraf bot
+    telegrafBot.launch();
 }
 
 // ===== WHATSAPP BOT =====
@@ -780,16 +707,16 @@ async function startBot() {
 // Graceful shutdown
 process.on('SIGINT', async () => {
     console.log('\n🛑 Shutting down...');
-    if (telegramBot) {
-        telegramBot.stopPolling();
+    if (telegrafBot) {
+        telegrafBot.stop();
     }
     process.exit(0);
 });
 
 process.on('SIGTERM', async () => {
     console.log('\n🛑 Shutting down...');
-    if (telegramBot) {
-        telegramBot.stopPolling();
+    if (telegrafBot) {
+        telegrafBot.stop();
     }
     process.exit(0);
 });
