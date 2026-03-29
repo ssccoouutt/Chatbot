@@ -38,7 +38,7 @@ const WHATSAPP_GROUPS = [
     "120363161222427319@g.us"
 ];
 const WHATSAPP_CHANNEL = "120363405181626845@newsletter";
-const TELEGRAM_CHANNEL_ID = -1001287988079; // Use number, not string
+const TELEGRAM_CHANNEL_ID = -1001287988079;
 
 // ===== CONSTANTS =====
 const TEMP_DIR = path.join(process.cwd(), 'temp');
@@ -168,6 +168,65 @@ function convertTelegramToWhatsApp(text, entities) {
     return cleanWhitespace(formatted);
 }
 
+async function downloadMedia(client, message) {
+    try {
+        if (message.media?.className === 'MessageMediaWebPage') {
+            return null;
+        }
+        
+        for (let attempt = 1; attempt <= 3; attempt++) {
+            try {
+                const tempFile = path.join(TEMP_DIR, `tg_${message.id}_${Date.now()}_${attempt}.tmp`);
+                
+                if (!fs.existsSync(TEMP_DIR)) {
+                    fs.mkdirSync(TEMP_DIR, { recursive: true });
+                }
+                
+                await client.downloadMedia(message, { outputFile: tempFile });
+                
+                if (!fs.existsSync(tempFile)) throw new Error('File not created');
+                
+                const stats = fs.statSync(tempFile);
+                if (stats.size === 0) throw new Error('File is empty');
+                
+                const buffer = fs.readFileSync(tempFile);
+                fs.unlinkSync(tempFile);
+                
+                let mimeType = 'application/octet-stream';
+                
+                if (message.photo) {
+                    mimeType = 'image/jpeg';
+                } else if (message.video) {
+                    mimeType = 'video/mp4';
+                } else if (message.document) {
+                    mimeType = message.document.mimeType || 'application/octet-stream';
+                } else if (message.audio) {
+                    mimeType = message.audio.mimeType || 'audio/mpeg';
+                } else if (message.voice) {
+                    mimeType = 'audio/ogg';
+                }
+                
+                return {
+                    buffer,
+                    size: stats.size,
+                    mimeType
+                };
+                
+            } catch (err) {
+                try {
+                    const tempFile = path.join(TEMP_DIR, `tg_${message.id}_attempt_${attempt}`);
+                    if (fs.existsSync(tempFile)) fs.unlinkSync(tempFile);
+                } catch (cleanupError) {}
+                
+                if (attempt < 3) await new Promise(resolve => setTimeout(resolve, attempt * 2000));
+            }
+        }
+        return null;
+    } catch (error) {
+        return null;
+    }
+}
+
 // ===== FORWARDING FUNCTIONS =====
 async function sendToWhatsAppChannel(messageData) {
     try {
@@ -222,56 +281,9 @@ async function sendToTelegramChannel(messageData) {
                 message: messageData.originalText,
                 parseMode: 'markdown'
             });
-        } else if (messageData.type === 'media') {
-            const caption = messageData.originalCaption || '';
-            
-            // Use the original file_id to forward properly
-            if (messageData.mediaType === 'photo' && messageData.fileId) {
-                // Forward using file_id
-                await telegramClient.sendFile(channelEntity, {
-                    file: messageData.fileId,
-                    caption: caption
-                });
-            } else if (messageData.mediaType === 'video' && messageData.fileId) {
-                await telegramClient.sendFile(channelEntity, {
-                    file: messageData.fileId,
-                    caption: caption
-                });
-            } else if (messageData.mediaType === 'audio' && messageData.fileId) {
-                await telegramClient.sendFile(channelEntity, {
-                    file: messageData.fileId,
-                    caption: caption
-                });
-            } else if (messageData.fileId) {
-                // Document or other file type
-                await telegramClient.sendFile(channelEntity, {
-                    file: messageData.fileId,
-                    caption: caption
-                });
-            } else {
-                // Fallback to buffer if no file_id (should not happen)
-                const mediaBuffer = messageData.buffer;
-                if (messageData.mediaType === 'photo') {
-                    await telegramClient.sendFile(channelEntity, {
-                        file: mediaBuffer,
-                        caption: caption,
-                        forceDocument: false
-                    });
-                } else if (messageData.mediaType === 'video') {
-                    await telegramClient.sendFile(channelEntity, {
-                        file: mediaBuffer,
-                        caption: caption,
-                        forceDocument: false,
-                        supportsStreaming: true
-                    });
-                } else {
-                    await telegramClient.sendFile(channelEntity, {
-                        file: mediaBuffer,
-                        caption: caption,
-                        fileName: messageData.fileName
-                    });
-                }
-            }
+        } else if (messageData.type === 'media' && messageData.originalMessage) {
+            // FORWARD the original message directly - this preserves everything!
+            await messageData.originalMessage.forwardTo(channelEntity);
         }
         log('INFO', `Sent to Telegram channel: ${TELEGRAM_CHANNEL_ID}`);
         return true;
@@ -642,61 +654,49 @@ async function startTelegramBridge() {
                     type: 'text',
                     content: formattedText,
                     originalText: originalText,
+                    originalMessage: msg, // Store the original message object for forwarding
                     timestamp: Date.now()
                 };
                 
-                // Check for media and get file_id for forwarding
-                if (msg.media) {
-                    let mediaType = null;
-                    let fileId = null;
-                    
-                    if (msg.photo) {
-                        mediaType = 'photo';
-                        fileId = msg.photo.id;
-                    } else if (msg.video) {
-                        mediaType = 'video';
-                        fileId = msg.video.id;
-                    } else if (msg.document) {
-                        mediaType = 'document';
-                        fileId = msg.document.id;
-                    } else if (msg.audio) {
-                        mediaType = 'audio';
-                        fileId = msg.audio.id;
-                    } else if (msg.voice) {
-                        mediaType = 'voice';
-                        fileId = msg.voice.id;
-                    }
-                    
-                    if (fileId) {
-                        // Download buffer for WhatsApp
-                        const mediaResult = await downloadMedia(telegramClient, msg);
+                // Check for media - download buffer only for WhatsApp
+                if (msg.media && msg.media.className !== 'MessageMediaWebPage') {
+                    const mediaResult = await downloadMedia(telegramClient, msg);
+                    if (mediaResult && mediaResult.buffer) {
+                        let fileName = 'file';
+                        let mediaType = 'document';
                         
-                        if (mediaResult && mediaResult.buffer) {
-                            let fileName = 'file';
-                            if (msg.photo) {
-                                fileName = `image_${msg.id}.jpg`;
-                            } else if (msg.video) {
-                                fileName = `video_${msg.id}.mp4`;
-                            } else if (msg.document) {
-                                const attr = msg.document.attributes.find(a => a.className === 'DocumentAttributeFilename');
-                                fileName = attr?.fileName || `file_${msg.id}.bin`;
-                            }
-                            
-                            messageData = {
-                                type: 'media',
-                                mediaType: mediaType,
-                                buffer: mediaResult.buffer,
-                                size: mediaResult.size,
-                                mimeType: mediaResult.mimeType,
-                                fileName: fileName,
-                                fileId: fileId, // Store file_id for Telegram forwarding
-                                caption: formattedText,
-                                originalCaption: originalText,
-                                timestamp: Date.now()
-                            };
-                        } else {
-                            return;
+                        if (msg.photo) {
+                            mediaType = 'photo';
+                            fileName = `image_${msg.id}.jpg`;
+                        } else if (msg.video) {
+                            mediaType = 'video';
+                            fileName = `video_${msg.id}.mp4`;
+                        } else if (msg.document) {
+                            mediaType = 'document';
+                            const attr = msg.document.attributes.find(a => a.className === 'DocumentAttributeFilename');
+                            fileName = attr?.fileName || `file_${msg.id}.bin`;
+                        } else if (msg.audio) {
+                            mediaType = 'audio';
+                            fileName = `audio_${msg.id}.mp3`;
+                        } else if (msg.voice) {
+                            mediaType = 'voice';
+                            fileName = `voice_${msg.id}.ogg`;
                         }
+                        
+                        messageData = {
+                            type: 'media',
+                            mediaType: mediaType,
+                            buffer: mediaResult.buffer,
+                            size: mediaResult.size,
+                            mimeType: mediaResult.mimeType,
+                            fileName: fileName,
+                            caption: formattedText,
+                            originalCaption: originalText,
+                            originalMessage: msg, // Store original for forwarding
+                            timestamp: Date.now()
+                        };
+                    } else {
+                        return;
                     }
                 }
                 
@@ -742,65 +742,6 @@ async function startTelegramBridge() {
         logError('Failed to start bridge', error);
         isActive = false;
         return false;
-    }
-}
-
-async function downloadMedia(client, message) {
-    try {
-        if (message.media?.className === 'MessageMediaWebPage') {
-            return null;
-        }
-        
-        for (let attempt = 1; attempt <= 3; attempt++) {
-            try {
-                const tempFile = path.join(TEMP_DIR, `tg_${message.id}_${Date.now()}_${attempt}.tmp`);
-                
-                if (!fs.existsSync(TEMP_DIR)) {
-                    fs.mkdirSync(TEMP_DIR, { recursive: true });
-                }
-                
-                await client.downloadMedia(message, { outputFile: tempFile });
-                
-                if (!fs.existsSync(tempFile)) throw new Error('File not created');
-                
-                const stats = fs.statSync(tempFile);
-                if (stats.size === 0) throw new Error('File is empty');
-                
-                const buffer = fs.readFileSync(tempFile);
-                fs.unlinkSync(tempFile);
-                
-                let mimeType = 'application/octet-stream';
-                
-                if (message.photo) {
-                    mimeType = 'image/jpeg';
-                } else if (message.video) {
-                    mimeType = 'video/mp4';
-                } else if (message.document) {
-                    mimeType = message.document.mimeType || 'application/octet-stream';
-                } else if (message.audio) {
-                    mimeType = message.audio.mimeType || 'audio/mpeg';
-                } else if (message.voice) {
-                    mimeType = 'audio/ogg';
-                }
-                
-                return {
-                    buffer,
-                    size: stats.size,
-                    mimeType
-                };
-                
-            } catch (err) {
-                try {
-                    const tempFile = path.join(TEMP_DIR, `tg_${message.id}_attempt_${attempt}`);
-                    if (fs.existsSync(tempFile)) fs.unlinkSync(tempFile);
-                } catch (cleanupError) {}
-                
-                if (attempt < 3) await new Promise(resolve => setTimeout(resolve, attempt * 2000));
-            }
-        }
-        return null;
-    } catch (error) {
-        return null;
     }
 }
 
