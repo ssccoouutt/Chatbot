@@ -38,7 +38,7 @@ const WHATSAPP_GROUPS = [
     "120363161222427319@g.us"
 ];
 const WHATSAPP_CHANNEL = "120363405181626845@newsletter";
-const TELEGRAM_CHANNEL_ID = "-100128798079"; // Use string format
+const TELEGRAM_CHANNEL_ID = "-1001287988079"; // Use string format
 
 // ===== CONSTANTS =====
 const TEMP_DIR = path.join(process.cwd(), 'temp');
