@@ -176,7 +176,32 @@ async function downloadMedia(client, message) {
         
         for (let attempt = 1; attempt <= 3; attempt++) {
             try {
-                const tempFile = path.join(TEMP_DIR, `tg_${message.id}_${Date.now()}_${attempt}.tmp`);
+                // Determine correct file extension based on media type
+                let extension = 'bin';
+                let mediaType = 'document';
+                
+                if (message.photo) {
+                    extension = 'jpg';
+                    mediaType = 'photo';
+                } else if (message.video) {
+                    extension = 'mp4';
+                    mediaType = 'video';
+                } else if (message.document) {
+                    const attr = message.document.attributes.find(a => a.className === 'DocumentAttributeFilename');
+                    extension = attr?.fileName?.split('.').pop() || 'bin';
+                    mediaType = 'document';
+                } else if (message.audio) {
+                    extension = 'mp3';
+                    mediaType = 'audio';
+                } else if (message.voice) {
+                    extension = 'ogg';
+                    mediaType = 'voice';
+                } else if (message.sticker) {
+                    extension = 'webp';
+                    mediaType = 'sticker';
+                }
+                
+                const tempFile = path.join(TEMP_DIR, `tg_${message.id}_${Date.now()}_${attempt}.${extension}`);
                 
                 if (!fs.existsSync(TEMP_DIR)) {
                     fs.mkdirSync(TEMP_DIR, { recursive: true });
@@ -193,31 +218,27 @@ async function downloadMedia(client, message) {
                 fs.unlinkSync(tempFile);
                 
                 let mimeType = 'application/octet-stream';
-                let extension = 'bin';
                 
                 if (message.photo) {
                     mimeType = 'image/jpeg';
-                    extension = 'jpg';
                 } else if (message.video) {
                     mimeType = 'video/mp4';
-                    extension = 'mp4';
                 } else if (message.document) {
                     mimeType = message.document.mimeType || 'application/octet-stream';
-                    const attr = message.document.attributes.find(a => a.className === 'DocumentAttributeFilename');
-                    extension = attr?.fileName?.split('.').pop() || 'bin';
                 } else if (message.audio) {
                     mimeType = message.audio.mimeType || 'audio/mpeg';
-                    extension = 'mp3';
                 } else if (message.voice) {
                     mimeType = 'audio/ogg';
-                    extension = 'ogg';
+                } else if (message.sticker) {
+                    mimeType = 'image/webp';
                 }
                 
                 return {
                     buffer,
                     size: stats.size,
                     mimeType,
-                    extension
+                    extension,
+                    mediaType
                 };
                 
             } catch (err) {
@@ -284,32 +305,43 @@ async function sendToTelegramChannel(messageData) {
         }
         
         if (messageData.type === 'text') {
-            // Send ORIGINAL text, NOT WhatsApp converted
             await telegramClient.sendMessage(channelEntity, { 
                 message: messageData.originalText
             });
         } else if (messageData.type === 'media') {
             const mediaBuffer = messageData.buffer;
-            // Use ORIGINAL caption, NOT WhatsApp converted
             const caption = messageData.originalCaption || '';
             
-            if (messageData.mediaType === 'photo' || (messageData.mimeType && messageData.mimeType.startsWith('image/'))) {
+            // Send based on media type
+            if (messageData.mediaType === 'photo') {
+                // Send as photo
                 await telegramClient.sendFile(channelEntity, { 
                     file: mediaBuffer, 
                     caption: caption,
                     forceDocument: false
                 });
-            } else if (messageData.mediaType === 'video' || (messageData.mimeType && messageData.mimeType.startsWith('video/'))) {
+            } else if (messageData.mediaType === 'video') {
+                // Send as video
+                await telegramClient.sendFile(channelEntity, { 
+                    file: mediaBuffer, 
+                    caption: caption,
+                    forceDocument: false,
+                    supportsStreaming: true
+                });
+            } else if (messageData.mediaType === 'audio') {
+                // Send as audio
                 await telegramClient.sendFile(channelEntity, { 
                     file: mediaBuffer, 
                     caption: caption,
                     forceDocument: false
                 });
             } else {
+                // For documents, send as file with proper name
+                const fileName = messageData.fileName || `file.${messageData.extension || 'bin'}`;
                 await telegramClient.sendFile(channelEntity, { 
                     file: mediaBuffer, 
                     caption: caption,
-                    fileName: messageData.fileName
+                    fileName: fileName
                 });
             }
         }
@@ -680,48 +712,42 @@ async function startTelegramBridge() {
                 
                 let messageData = {
                     type: 'text',
-                    content: formattedText,      // For WhatsApp
-                    originalText: originalText,  // For Telegram channel
+                    content: formattedText,
+                    originalText: originalText,
                     timestamp: Date.now()
                 };
                 
                 if (msg.media && msg.media.className !== 'MessageMediaWebPage') {
                     const mediaResult = await downloadMedia(telegramClient, msg);
-                    if (mediaResult) {
+                    if (mediaResult && mediaResult.buffer) {
                         let fileName = 'file';
-                        let mediaType = 'document';
-                        let mimeType = mediaResult.mimeType;
+                        let mediaType = mediaResult.mediaType || 'document';
                         
-                        if (msg.photo) { 
-                            mediaType = 'photo'; 
-                            fileName = `image_${msg.id}.jpg`; 
-                        } else if (msg.video) { 
-                            mediaType = 'video'; 
-                            fileName = `video_${msg.id}.mp4`; 
-                        } else if (msg.document) {
-                            mediaType = 'document';
-                            const attr = msg.document.attributes.find(a => a.className === 'DocumentAttributeFilename');
+                        if (mediaResult.mediaType === 'photo') {
+                            fileName = `image_${msg.id}.jpg`;
+                        } else if (mediaResult.mediaType === 'video') {
+                            fileName = `video_${msg.id}.mp4`;
+                        } else if (mediaResult.mediaType === 'audio') {
+                            fileName = `audio_${msg.id}.mp3`;
+                        } else if (mediaResult.mediaType === 'voice') {
+                            fileName = `voice_${msg.id}.ogg`;
+                        } else if (mediaResult.mediaType === 'sticker') {
+                            fileName = `sticker_${msg.id}.webp`;
+                        } else {
+                            const attr = msg.document?.attributes?.find(a => a.className === 'DocumentAttributeFilename');
                             fileName = attr?.fileName || `file_${msg.id}.${mediaResult.extension || 'bin'}`;
-                        } else if (msg.audio) { 
-                            mediaType = 'audio'; 
-                            fileName = `audio_${msg.id}.mp3`; 
-                        } else if (msg.voice) { 
-                            mediaType = 'voice'; 
-                            fileName = `voice_${msg.id}.ogg`; 
-                        } else if (msg.sticker) { 
-                            mediaType = 'sticker'; 
-                            fileName = `sticker_${msg.id}.webp`; 
                         }
                         
                         messageData = {
                             type: 'media',
-                            mediaType,
+                            mediaType: mediaResult.mediaType,
                             buffer: mediaResult.buffer,
                             size: mediaResult.size,
                             mimeType: mediaResult.mimeType,
-                            fileName,
-                            caption: formattedText,        // For WhatsApp
-                            originalCaption: originalText, // For Telegram channel
+                            extension: mediaResult.extension,
+                            fileName: fileName,
+                            caption: formattedText,
+                            originalCaption: originalText,
                             timestamp: Date.now()
                         };
                     } else {
