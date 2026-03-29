@@ -61,8 +61,61 @@ function cleanWhitespace(text) {
     return text.trim();
 }
 
-function convertTelegramToWhatsApp(text) {
+// EXACT SAME FORMATTING FUNCTION FROM YOUR ORIGINAL SCRIPT
+function convertTelegramToWhatsApp(text, entities) {
     if (!text) return text;
+    
+    let cleanText = text;
+    cleanText = cleanText.replace(/\*\*/g, '');
+    cleanText = cleanText.replace(/__/g, '');
+    cleanText = cleanText.replace(/~~/g, '');
+    cleanText = cleanText.replace(/`/g, '');
+    
+    if (entities && entities.length > 0) {
+        const reversedEntities = [...entities].sort((a, b) => b.offset - a.offset);
+        let textArray = cleanText.split('');
+        
+        for (const entity of reversedEntities) {
+            const start = entity.offset;
+            const end = start + entity.length;
+            const type = entity.type;
+            
+            if (type === 'blockquote') continue;
+            
+            const content = cleanText.substring(start, end);
+            
+            let prefix = '', suffix = '';
+            switch (type) {
+                case 'bold': prefix = '*'; suffix = '*'; break;
+                case 'italic': prefix = '_'; suffix = '_'; break;
+                case 'strikethrough': prefix = '~'; suffix = '~'; break;
+                case 'code':
+                case 'pre': prefix = '```'; suffix = '```'; break;
+                default: continue;
+            }
+            
+            let replacement;
+            if (type === 'pre') {
+                replacement = prefix + content + suffix;
+            } else {
+                const lines = content.split('\n');
+                const wrappedLines = [];
+                for (const line of lines) {
+                    if (line.trim()) {
+                        wrappedLines.push(prefix + line.trim() + suffix);
+                    } else {
+                        wrappedLines.push('');
+                    }
+                }
+                replacement = wrappedLines.join('\n');
+            }
+            
+            textArray.splice(start, end - start, replacement);
+        }
+        
+        let result = textArray.join('');
+        return cleanWhitespace(result);
+    }
     
     let formatted = text;
     formatted = formatted.replace(/\*\*(.*?)\*\*/g, '*$1*');
@@ -71,6 +124,32 @@ function convertTelegramToWhatsApp(text) {
     formatted = formatted.replace(/`(.*?)`/g, '```$1```');
     
     return cleanWhitespace(formatted);
+}
+
+// Extract entities from Telegram message
+function extractEntities(msg) {
+    const entities = [];
+    
+    if (msg.entities) {
+        for (const entity of msg.entities) {
+            let type = '';
+            switch (entity.type) {
+                case 'bold': type = 'bold'; break;
+                case 'italic': type = 'italic'; break;
+                case 'strikethrough': type = 'strikethrough'; break;
+                case 'code': type = 'code'; break;
+                case 'pre': type = 'pre'; break;
+                default: continue;
+            }
+            entities.push({
+                offset: entity.offset,
+                length: entity.length,
+                type: type
+            });
+        }
+    }
+    
+    return entities;
 }
 
 // ===== FORWARDING FUNCTIONS =====
@@ -114,8 +193,9 @@ async function sendToTelegramChannel(messageData) {
         if (!telegramBot) return false;
         
         if (messageData.type === 'text') {
+            // Send with HTML parse mode for formatting
             await telegramBot.sendMessage(TELEGRAM_CHANNEL_ID, messageData.originalText, {
-                parse_mode: 'Markdown'
+                parse_mode: 'HTML'
             });
             console.log(`✅ Text sent to Telegram channel`);
         } else if (messageData.type === 'media') {
@@ -286,37 +366,42 @@ function initTelegramBot() {
         telegramBot.sendMessage(chatId, helpMessage, { parse_mode: 'Markdown' });
     });
     
-    // Handle text messages
+    // Handle all messages
     telegramBot.on('message', async (msg) => {
-        // Skip if it's a command, callback query, or has no text
+        // Skip if it's a command or callback query
         if (msg.text && msg.text.startsWith('/')) return;
         if (msg.callback_query) return;
         if (!msg.text && !msg.photo && !msg.video && !msg.document) return;
         
         const chatId = msg.chat.id;
-        
-        // Generate unique ID
         const uniqueId = `${chatId}_${Date.now()}_${Math.random().toString(36).substr(2, 6)}`;
         
-        // Handle text
+        // Handle TEXT messages with formatting
         if (msg.text) {
-            const text = msg.text;
-            console.log(`\n📝 Text message from ${msg.from.username || msg.from.id}: ${text.substring(0, 100)}`);
+            const originalText = msg.text;
+            const entities = extractEntities(msg);
             
-            const formattedForWhatsApp = convertTelegramToWhatsApp(text);
+            console.log(`\n📝 Text message from ${msg.from.username || msg.from.id}`);
+            console.log(`Original: ${originalText.substring(0, 100)}`);
+            
+            // Convert to WhatsApp format using the original function
+            const formattedForWhatsApp = convertTelegramToWhatsApp(originalText, entities);
+            console.log(`Formatted for WhatsApp: ${formattedForWhatsApp.substring(0, 100)}`);
             
             const messageData = {
                 type: 'text',
                 content: formattedForWhatsApp,
-                originalText: text,
+                originalText: originalText,
                 timestamp: Date.now()
             };
             
             pendingMessages.set(uniqueId, messageData);
             
+            const previewText = originalText.length > 100 ? originalText.substring(0, 100) + '...' : originalText;
+            
             const confirmationMessage = 
                 `📨 New Message\n\n` +
-                `Preview: ${text.substring(0, 100)}${text.length > 100 ? '...' : ''}\n\n` +
+                `Preview: ${previewText}\n\n` +
                 `Forward to?`;
             
             const opts = {
@@ -335,20 +420,22 @@ function initTelegramBot() {
             await telegramBot.sendMessage(chatId, confirmationMessage, opts);
         }
         
-        // Handle photo
+        // Handle PHOTO messages
         else if (msg.photo) {
             const caption = msg.caption || '';
-            const photo = msg.photo[msg.photo.length - 1];
             
             console.log(`\n📸 Photo from ${msg.from.username || msg.from.id}`);
-            console.log(`📝 Caption: ${caption.substring(0, 100)}`);
+            console.log(`Caption: ${caption.substring(0, 100)}`);
             
             try {
+                const photo = msg.photo[msg.photo.length - 1];
                 const fileLink = await telegramBot.getFileLink(photo.file_id);
                 const response = await axios.get(fileLink, { responseType: 'arraybuffer' });
                 const buffer = Buffer.from(response.data);
                 
-                const formattedCaption = convertTelegramToWhatsApp(caption);
+                // Extract entities from caption for formatting
+                const entities = extractEntities(msg);
+                const formattedCaption = convertTelegramToWhatsApp(caption, entities);
                 
                 const messageData = {
                     type: 'media',
@@ -391,20 +478,22 @@ function initTelegramBot() {
             }
         }
         
-        // Handle video
+        // Handle VIDEO messages
         else if (msg.video) {
             const caption = msg.caption || '';
-            const video = msg.video;
             
             console.log(`\n🎥 Video from ${msg.from.username || msg.from.id}`);
-            console.log(`📝 Caption: ${caption.substring(0, 100)}`);
+            console.log(`Caption: ${caption.substring(0, 100)}`);
             
             try {
+                const video = msg.video;
                 const fileLink = await telegramBot.getFileLink(video.file_id);
                 const response = await axios.get(fileLink, { responseType: 'arraybuffer' });
                 const buffer = Buffer.from(response.data);
                 
-                const formattedCaption = convertTelegramToWhatsApp(caption);
+                // Extract entities from caption for formatting
+                const entities = extractEntities(msg);
+                const formattedCaption = convertTelegramToWhatsApp(caption, entities);
                 
                 const messageData = {
                     type: 'media',
@@ -456,17 +545,16 @@ function initTelegramBot() {
         
         console.log(`[DEBUG] Callback received: ${callbackData}`);
         
-        // Parse callback data: format is "uniqueId_target"
         const parts = callbackData.split('_');
-        const target = parts.pop(); // Last part is the target
-        const uniqueId = parts.join('_'); // Everything else is the unique ID
+        const target = parts.pop();
+        const uniqueId = parts.join('_');
         
         console.log(`[DEBUG] UniqueId: ${uniqueId}, Target: ${target}`);
         
         const messageData = pendingMessages.get(uniqueId);
         
         if (!messageData) {
-            await telegramBot.answerCallbackQuery(callbackQuery.id, { text: '❌ Message expired or already processed!' });
+            await telegramBot.answerCallbackQuery(callbackQuery.id, { text: '❌ Message expired!' });
             await telegramBot.editMessageText('❌ This message has expired.', {
                 chat_id: chatId,
                 message_id: messageId
@@ -511,7 +599,7 @@ function initTelegramBot() {
                 message_id: messageId
             });
         } else {
-            await telegramBot.editMessageText('❌ Failed to forward. Make sure bot has permissions.', {
+            await telegramBot.editMessageText('❌ Failed to forward.', {
                 chat_id: chatId,
                 message_id: messageId
             });
@@ -552,7 +640,6 @@ async function startBot() {
             console.log("📱 Commands: .ping - Test bot response");
             console.log("⚠️ Bot will ONLY respond in PRIVATE chats (not in groups)\n");
             
-            // Start Telegram bot
             if (!isTelegramActive) {
                 initTelegramBot();
                 isTelegramActive = true;
@@ -568,7 +655,6 @@ async function startBot() {
 
         const from = msg.key.remoteJid;
         
-        // IGNORE GROUP MESSAGES
         if (from.includes('@g.us')) return;
         
         let text = '';
