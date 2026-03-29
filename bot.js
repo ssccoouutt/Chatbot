@@ -73,70 +73,146 @@ function escapeHtml(text) {
         .replace(/'/g, '&#39;');
 }
 
-// Convert Telegram entities to HTML
-function entitiesToHTML(text, entities) {
-    if (!text) return text;
-    if (!entities || entities.length === 0) return escapeHtml(text);
-    
-    let result = escapeHtml(text);
-    const sortedEntities = [...entities].sort((a, b) => b.offset - a.offset);
-    
-    for (const entity of sortedEntities) {
-        const start = entity.offset;
-        const end = start + entity.length;
-        
-        if (start >= result.length || end > result.length) continue;
-        
-        const content = result.substring(start, end);
-        
-        let htmlTag = '';
-        let closeTag = '';
-        
-        switch (entity.type) {
-            case 'bold':
-                htmlTag = '<b>';
-                closeTag = '</b>';
-                break;
-            case 'italic':
-                htmlTag = '<i>';
-                closeTag = '</i>';
-                break;
-            case 'underline':
-                htmlTag = '<u>';
-                closeTag = '</u>';
-                break;
-            case 'strikethrough':
-                htmlTag = '<s>';
-                closeTag = '</s>';
-                break;
-            case 'code':
-                htmlTag = '<code>';
-                closeTag = '</code>';
-                break;
-            case 'pre':
-                htmlTag = '<pre>';
-                closeTag = '</pre>';
-                break;
-            case 'text_link':
-                htmlTag = `<a href="${escapeHtml(entity.url)}">`;
-                closeTag = '</a>';
-                break;
-            case 'spoiler':
-                htmlTag = '<tg-spoiler>';
-                closeTag = '</tg-spoiler>';
-                break;
-            default:
-                continue;
-        }
-        
-        const replacement = htmlTag + content + closeTag;
-        result = result.substring(0, start) + replacement + result.substring(end);
-    }
-    
-    return result;
+// Filter entities to only supported formatting types (like Python's filter_entities)
+function filterEntities(entities) {
+    const allowedTypes = new Set([
+        'bold', 'italic', 'code', 'pre', 'underline', 
+        'strikethrough', 'text_link', 'spoiler'
+    ]);
+    return entities.filter(e => allowedTypes.has(e.type));
 }
 
-// Convert Telegram entities to WhatsApp format
+// Adjust entity offsets for multi-code-point characters (like Python's adjust_entity_offsets)
+function adjustEntityOffsets(text, entities) {
+    if (!entities || entities.length === 0) return entities;
+    
+    // Create a mapping of UTF-16 code unit positions to character positions
+    const posMap = new Map();
+    let charPos = 0;
+    let utf16Pos = 0;
+    
+    for (const char of text) {
+        posMap.set(utf16Pos, charPos);
+        utf16Pos += Buffer.byteLength(char, 'utf16le') / 2;
+        charPos++;
+    }
+    
+    const adjustedEntities = [];
+    for (const entity of entities) {
+        const start = posMap.get(entity.offset) ?? entity.offset;
+        const end = posMap.get(entity.offset + entity.length) ?? entity.offset + entity.length;
+        
+        adjustedEntities.push({
+            ...entity,
+            offset: start,
+            length: end - start
+        });
+    }
+    
+    return adjustedEntities;
+}
+
+// Apply Telegram formatting with proper nesting (exactly like Python's apply_telegram_formatting)
+function applyTelegramFormatting(text, entities) {
+    if (!text) return text;
+    
+    // Convert to array for character-level manipulation
+    let chars = [...text];
+    let textLength = chars.length;
+    
+    // Sort entities by offset in reverse order
+    const sortedEntities = [...entities].sort((a, b) => b.offset - a.offset);
+    
+    // Entity processing map
+    const entityTags = {
+        'bold': ['<b>', '</b>'],
+        'italic': ['<i>', '</i>'],
+        'underline': ['<u>', '</u>'],
+        'strikethrough': ['<s>', '</s>'],
+        'spoiler': ['<tg-spoiler>', '</tg-spoiler>'],
+        'code': ['<code>', '</code>'],
+        'pre': ['<pre>', '</pre>'],
+        'text_link': [null, '</a>']
+    };
+    
+    for (const entity of sortedEntities) {
+        const entityType = entity.type;
+        if (!entityTags[entityType]) continue;
+        
+        let startTag, endTag;
+        if (entityType === 'text_link') {
+            startTag = `<a href="${escapeHtml(entity.url)}">`;
+            endTag = '</a>';
+        } else {
+            [startTag, endTag] = entityTags[entityType];
+        }
+        
+        let start = entity.offset;
+        let end = start + entity.length;
+        
+        // Validate positions
+        if (start >= textLength || end > textLength) continue;
+        
+        // Extract content
+        const before = chars.slice(0, start).join('');
+        const content = chars.slice(start, end).join('');
+        const after = chars.slice(end).join('');
+        
+        // Special handling for blockquotes to prevent nesting issues
+        if (entityType === 'blockquote') {
+            const cleanContent = content.replace(/<[/]?[biu]>|<\/?[su]>|<\/?code>|<\/?pre>|<\/?a>/g, '');
+            chars = [...before + startTag + cleanContent + endTag + after];
+        } else {
+            chars = [...before + startTag + content + endTag + after];
+        }
+        textLength = chars.length;
+    }
+    
+    // Handle manual blockquotes (lines starting with >)
+    let formattedText = chars.join('');
+    if (formattedText.includes('>')) {
+        formattedText = formattedText.replace(/&gt;/g, '>');
+        const lines = formattedText.split('\n');
+        const formattedLines = [];
+        let inBlockquote = false;
+        
+        for (const line of lines) {
+            if (line.startsWith('>')) {
+                if (!inBlockquote) {
+                    formattedLines.push('<blockquote>');
+                    inBlockquote = true;
+                }
+                formattedLines.push(line.substring(1).trim());
+            } else {
+                if (inBlockquote) {
+                    formattedLines.push('</blockquote>');
+                    inBlockquote = false;
+                }
+                formattedLines.push(line);
+            }
+        }
+        
+        if (inBlockquote) {
+            formattedLines.push('</blockquote>');
+        }
+        
+        formattedText = formattedLines.join('\n');
+    }
+    
+    // Final HTML escaping (except for our tags)
+    formattedText = formattedText.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    
+    // Re-insert our HTML tags
+    const htmlTags = ['b', 'i', 'u', 's', 'code', 'pre', 'a', 'tg-spoiler', 'blockquote'];
+    for (const tag of htmlTags) {
+        formattedText = formattedText.replace(new RegExp(`&lt;${tag}&gt;`, 'g'), `<${tag}>`);
+        formattedText = formattedText.replace(new RegExp(`&lt;/${tag}&gt;`, 'g'), `</${tag}>`);
+    }
+    
+    return formattedText;
+}
+
+// Convert Telegram entities to WhatsApp format (like Python's clean_whatsapp_text)
 function entitiesToWhatsApp(text, entities) {
     if (!text) return text;
     
@@ -155,28 +231,32 @@ function entitiesToWhatsApp(text, entities) {
         return cleanWhitespace(formatted);
     }
     
+    const entityTypes = {
+        'bold': ['*', '*'],
+        'italic': ['_', '_'],
+        'strikethrough': ['~', '~'],
+        'code': ['```', '```'],
+        'pre': ['```\n', '\n```']
+    };
+    
     const sortedEntities = [...entities].sort((a, b) => b.offset - a.offset);
-    let textArray = cleanText.split('');
+    let result = cleanText;
+    let offsetAdjustment = 0;
     
     for (const entity of sortedEntities) {
-        const start = entity.offset;
+        const entityType = entity.type;
+        if (!entityTypes[entityType]) continue;
+        
+        const [prefix, suffix] = entityTypes[entityType];
+        const start = entity.offset + offsetAdjustment;
         const end = start + entity.length;
-        if (start >= textArray.length || end > textArray.length) continue;
         
-        const content = cleanText.substring(start, end);
+        if (start >= result.length || end > result.length) continue;
         
-        let prefix = '', suffix = '';
-        switch (entity.type) {
-            case 'bold': prefix = '*'; suffix = '*'; break;
-            case 'italic': prefix = '_'; suffix = '_'; break;
-            case 'strikethrough': prefix = '~'; suffix = '~'; break;
-            case 'code': prefix = '```'; suffix = '```'; break;
-            case 'pre': prefix = '```\n'; suffix = '\n```'; break;
-            default: continue;
-        }
+        const content = result.substring(start, end);
         
         let replacement;
-        if (entity.type === 'pre') {
+        if (entityType === 'pre') {
             replacement = prefix + content + suffix;
         } else {
             const lines = content.split('\n');
@@ -191,10 +271,10 @@ function entitiesToWhatsApp(text, entities) {
             replacement = wrappedLines.join('\n');
         }
         
-        textArray.splice(start, end - start, replacement);
+        result = result.substring(0, start) + replacement + result.substring(end);
+        offsetAdjustment += replacement.length - entity.length;
     }
     
-    let result = textArray.join('');
     return cleanWhitespace(result);
 }
 
@@ -239,14 +319,21 @@ async function sendToTelegramChannel(messageData) {
         if (!sendBot) return false;
         
         if (messageData.type === 'text') {
-            const formattedText = entitiesToHTML(messageData.originalText, messageData.entities);
+            // Filter and adjust entities like Python version
+            const filteredEntities = filterEntities(messageData.entities || []);
+            const adjustedEntities = adjustEntityOffsets(messageData.originalText, filteredEntities);
+            const formattedText = applyTelegramFormatting(messageData.originalText, adjustedEntities);
+            
             await sendBot.sendMessage(TELEGRAM_CHANNEL_ID, formattedText, {
-                parse_mode: 'HTML'
+                parse_mode: 'HTML',
+                disable_web_page_preview: true
             });
-            console.log(`✅ Text sent to Telegram channel`);
+            console.log(`✅ Text sent to Telegram channel with formatting`);
         } else if (messageData.type === 'media') {
             const caption = messageData.originalCaption || '';
-            const formattedCaption = entitiesToHTML(caption, messageData.captionEntities);
+            const filteredEntities = filterEntities(messageData.captionEntities || []);
+            const adjustedEntities = adjustEntityOffsets(caption, filteredEntities);
+            const formattedCaption = applyTelegramFormatting(caption, adjustedEntities);
             
             const mediaBuffer = messageData.buffer;
             const tempFilePath = path.join(TEMP_DIR, `send_tg_${Date.now()}.jpg`);
@@ -269,7 +356,7 @@ async function sendToTelegramChannel(messageData) {
                         parse_mode: 'HTML'
                     });
                 }
-                console.log(`✅ ${messageData.mediaType} sent to Telegram channel`);
+                console.log(`✅ ${messageData.mediaType} sent to Telegram channel with formatting`);
             } finally {
                 if (fs.existsSync(tempFilePath)) fs.unlinkSync(tempFilePath);
             }
