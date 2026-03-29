@@ -3,12 +3,7 @@ const {
     useMultiFileAuthState,
     DisconnectReason,
     fetchLatestBaileysVersion,
-    downloadContentFromMessage,
-    jidDecode,
-    proto,
-    generateWAMessageContent,
-    generateWAMessage,
-    prepareWAMessageMedia
+    downloadContentFromMessage
 } = require("@whiskeysockets/baileys");
 const pino = require("pino");
 const { Boom } = require("@hapi/boom");
@@ -17,7 +12,6 @@ const { TelegramClient } = require('telegram');
 const { StringSession } = require('telegram/sessions');
 const { NewMessage } = require('telegram/events');
 const { Telegraf } = require('telegraf');
-const axios = require("axios");
 const path = require("path");
 const fs = require('fs');
 const sharp = require('sharp');
@@ -47,7 +41,6 @@ const RATE_LIMIT_DELAY = 3000;
 // ===== STATE =====
 let telegramClient = null;
 let isActive = false;
-let connectionReady = false;
 let telegramBot = null;
 let whatsappSock = null;
 let keepAliveInterval = null;
@@ -276,49 +269,39 @@ async function sendToTelegramChannel(messageData) {
         }
         
         if (messageData.type === 'text') {
-            // Send original text with markdown parsing
             await telegramClient.sendMessage(channelEntity, {
                 message: messageData.originalText,
                 parseMode: 'markdown'
             });
-        } else if (messageData.type === 'media' && messageData.originalMessage) {
-            const originalMsg = messageData.originalMessage;
+        } else if (messageData.type === 'media' && messageData.buffer) {
             const caption = messageData.originalCaption || '';
+            const mediaBuffer = messageData.buffer;
             
-            // Copy the media using file_id (no forward tag)
-            if (originalMsg.photo) {
+            // Send using buffer (works reliably)
+            if (messageData.mediaType === 'photo') {
                 await telegramClient.sendFile(channelEntity, {
-                    file: originalMsg.photo.id,
-                    caption: caption
-                });
-            } else if (originalMsg.video) {
-                await telegramClient.sendFile(channelEntity, {
-                    file: originalMsg.video.id,
+                    file: mediaBuffer,
                     caption: caption,
+                    forceDocument: false
+                });
+            } else if (messageData.mediaType === 'video') {
+                await telegramClient.sendFile(channelEntity, {
+                    file: mediaBuffer,
+                    caption: caption,
+                    forceDocument: false,
                     supportsStreaming: true
                 });
-            } else if (originalMsg.document) {
-                const fileNameAttr = originalMsg.document.attributes.find(
-                    a => a.className === 'DocumentAttributeFilename'
-                );
+            } else if (messageData.mediaType === 'audio') {
                 await telegramClient.sendFile(channelEntity, {
-                    file: originalMsg.document.id,
+                    file: mediaBuffer,
                     caption: caption,
-                    fileName: fileNameAttr?.fileName || 'file'
+                    forceDocument: false
                 });
-            } else if (originalMsg.audio) {
+            } else {
                 await telegramClient.sendFile(channelEntity, {
-                    file: originalMsg.audio.id,
-                    caption: caption
-                });
-            } else if (originalMsg.voice) {
-                await telegramClient.sendFile(channelEntity, {
-                    file: originalMsg.voice.id,
-                    caption: caption
-                });
-            } else if (originalMsg.sticker) {
-                await telegramClient.sendFile(channelEntity, {
-                    file: originalMsg.sticker.id
+                    file: mediaBuffer,
+                    caption: caption,
+                    fileName: messageData.fileName || 'file'
                 });
             }
         }
@@ -652,10 +635,7 @@ async function startTelegramBridge() {
         
         telegramClient = new TelegramClient(new StringSession(""), API_ID, API_HASH, {
             connectionRetries: 5,
-            downloadRetries: 3,
-            deviceModel: "Desktop",
-            systemVersion: "Windows 10",
-            appVersion: "1.0.0"
+            downloadRetries: 3
         });
         
         await telegramClient.start({ botAuthToken: TELEGRAM_BOT_TOKEN });
@@ -663,8 +643,6 @@ async function startTelegramBridge() {
         if (!telegramBot) initTelegramBot();
         
         startKeepAlive();
-        await new Promise(resolve => setTimeout(resolve, 2000));
-        connectionReady = true;
         
         async function messageHandler(event) {
             try {
@@ -691,11 +669,10 @@ async function startTelegramBridge() {
                     type: 'text',
                     content: formattedText,
                     originalText: originalText,
-                    originalMessage: msg,
                     timestamp: Date.now()
                 };
                 
-                // Check for media - download buffer only for WhatsApp
+                // Check for media - download buffer for both WhatsApp and Telegram
                 if (msg.media && msg.media.className !== 'MessageMediaWebPage') {
                     const mediaResult = await downloadMedia(telegramClient, msg);
                     if (mediaResult && mediaResult.buffer) {
@@ -729,7 +706,6 @@ async function startTelegramBridge() {
                             fileName: fileName,
                             caption: formattedText,
                             originalCaption: originalText,
-                            originalMessage: msg,
                             timestamp: Date.now()
                         };
                     } else {
@@ -795,7 +771,6 @@ async function stopTelegramBridge() {
             keepAliveInterval = null;
         }
         isActive = false;
-        connectionReady = false;
         pendingMessages.clear();
         console.log('✅ Telegram bridge stopped');
     } catch (error) {
