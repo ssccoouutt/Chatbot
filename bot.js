@@ -273,36 +273,44 @@ async function sendToTelegramChannel(messageData) {
                 message: messageData.originalText,
                 parseMode: 'markdown'
             });
-        } else if (messageData.type === 'media' && messageData.buffer) {
-            const caption = messageData.originalCaption || '';
-            const mediaBuffer = messageData.buffer;
-            
-            // Send using buffer (works reliably)
-            if (messageData.mediaType === 'photo') {
-                await telegramClient.sendFile(channelEntity, {
-                    file: mediaBuffer,
-                    caption: caption,
-                    forceDocument: false
+        } else if (messageData.type === 'media' && messageData.originalMsgId) {
+            try {
+                // Get the original message using its ID
+                const originalMessage = await telegramClient.getMessages(messageData.originalChatId, {
+                    ids: messageData.originalMsgId
                 });
-            } else if (messageData.mediaType === 'video') {
-                await telegramClient.sendFile(channelEntity, {
-                    file: mediaBuffer,
-                    caption: caption,
-                    forceDocument: false,
-                    supportsStreaming: true
-                });
-            } else if (messageData.mediaType === 'audio') {
-                await telegramClient.sendFile(channelEntity, {
-                    file: mediaBuffer,
-                    caption: caption,
-                    forceDocument: false
-                });
-            } else {
-                await telegramClient.sendFile(channelEntity, {
-                    file: mediaBuffer,
-                    caption: caption,
-                    fileName: messageData.fileName || 'file'
-                });
+                
+                if (originalMessage && originalMessage.length > 0) {
+                    const msg = originalMessage[0];
+                    const caption = messageData.originalCaption || '';
+                    
+                    // Send using the original file_id (this preserves media type)
+                    if (msg.photo) {
+                        await telegramClient.sendFile(channelEntity, {
+                            file: msg.photo.id,
+                            caption: caption
+                        });
+                    } else if (msg.video) {
+                        await telegramClient.sendFile(channelEntity, {
+                            file: msg.video.id,
+                            caption: caption,
+                            supportsStreaming: true
+                        });
+                    } else if (msg.document) {
+                        await telegramClient.sendFile(channelEntity, {
+                            file: msg.document.id,
+                            caption: caption
+                        });
+                    } else if (msg.audio) {
+                        await telegramClient.sendFile(channelEntity, {
+                            file: msg.audio.id,
+                            caption: caption
+                        });
+                    }
+                }
+            } catch (err) {
+                logError('Failed to copy message', err);
+                return false;
             }
         }
         log('INFO', `Sent to Telegram channel: ${TELEGRAM_CHANNEL_ID}`);
@@ -669,10 +677,12 @@ async function startTelegramBridge() {
                     type: 'text',
                     content: formattedText,
                     originalText: originalText,
+                    originalMsgId: msg.id,
+                    originalChatId: chatId,
                     timestamp: Date.now()
                 };
                 
-                // Check for media - download buffer for both WhatsApp and Telegram
+                // Check for media - download buffer for WhatsApp, store IDs for Telegram
                 if (msg.media && msg.media.className !== 'MessageMediaWebPage') {
                     const mediaResult = await downloadMedia(telegramClient, msg);
                     if (mediaResult && mediaResult.buffer) {
@@ -706,6 +716,8 @@ async function startTelegramBridge() {
                             fileName: fileName,
                             caption: formattedText,
                             originalCaption: originalText,
+                            originalMsgId: msg.id,
+                            originalChatId: chatId,
                             timestamp: Date.now()
                         };
                     } else {
