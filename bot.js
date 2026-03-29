@@ -38,7 +38,7 @@ const WHATSAPP_GROUPS = [
     "120363161222427319@g.us"
 ];
 const WHATSAPP_CHANNEL = "120363405181626845@newsletter";
-const TELEGRAM_CHANNEL_ID = -100128798079;
+const TELEGRAM_CHANNEL_ID = "-100128798079"; // Use string format
 
 // ===== CONSTANTS =====
 const TEMP_DIR = path.join(process.cwd(), 'temp');
@@ -56,10 +56,10 @@ const pendingMessages = new Map();
 // Create temp directory
 if (!fs.existsSync(TEMP_DIR)) fs.mkdirSync(TEMP_DIR, { recursive: true });
 
-// ===== SILENT LOGGING - Only errors! =====
+// ===== LOGGING =====
 function logError(message, error = null) {
     const timestamp = new Date().toISOString();
-    console.error(`[${timestamp}] [TelegramBridge ERROR] ${message}`);
+    console.error(`[${timestamp}] [ERROR] ${message}`);
     if (error) console.error(error);
 }
 
@@ -69,14 +69,14 @@ function log(level, msg, data) {
     if (data) console.log(JSON.stringify(data, null, 2));
 }
 
-// ===== HELPER FUNCTIONS (EXACTLY AS ORIGINAL) =====
+// ===== HELPER FUNCTIONS =====
 async function generateThumbnail(buffer) {
     try {
         const thumbnail = await sharp(buffer)
-            .resize(100, 100, { fit: 'inside' })
-            .jpeg({ quality: 50 })
+            .resize(200, 200, { fit: 'inside' })
+            .jpeg({ quality: 70 })
             .toBuffer();
-        return thumbnail.toString('base64');
+        return thumbnail;
     } catch (err) {
         return null;
     }
@@ -94,7 +94,7 @@ function startKeepAlive() {
         try {
             await telegramClient.getMe();
         } catch (err) {}
-    }, 15000);
+    }, 30000);
 }
 
 function cleanWhitespace(text) {
@@ -176,7 +176,7 @@ async function downloadMedia(client, message) {
         
         for (let attempt = 1; attempt <= 3; attempt++) {
             try {
-                const tempFile = path.join(TEMP_DIR, `tg_${message.id}_attempt_${attempt}`);
+                const tempFile = path.join(TEMP_DIR, `tg_${message.id}_${Date.now()}_${attempt}.tmp`);
                 
                 if (!fs.existsSync(TEMP_DIR)) {
                     fs.mkdirSync(TEMP_DIR, { recursive: true });
@@ -192,12 +192,33 @@ async function downloadMedia(client, message) {
                 const buffer = fs.readFileSync(tempFile);
                 fs.unlinkSync(tempFile);
                 
+                // Determine MIME type and format
+                let mimeType = 'application/octet-stream';
+                let extension = 'bin';
+                
+                if (message.photo) {
+                    mimeType = 'image/jpeg';
+                    extension = 'jpg';
+                } else if (message.video) {
+                    mimeType = 'video/mp4';
+                    extension = 'mp4';
+                } else if (message.document) {
+                    mimeType = message.document.mimeType || 'application/octet-stream';
+                    const attr = message.document.attributes.find(a => a.className === 'DocumentAttributeFilename');
+                    extension = attr?.fileName?.split('.').pop() || 'bin';
+                } else if (message.audio) {
+                    mimeType = message.audio.mimeType || 'audio/mpeg';
+                    extension = 'mp3';
+                } else if (message.voice) {
+                    mimeType = 'audio/ogg';
+                    extension = 'ogg';
+                }
+                
                 return {
                     buffer,
                     size: stats.size,
-                    mimeType: message.photo ? 'image/jpeg' : 
-                             message.video ? 'video/mp4' : 
-                             message.document?.mimeType || 'application/octet-stream'
+                    mimeType,
+                    extension
                 };
                 
             } catch (err) {
@@ -220,78 +241,73 @@ async function sendToWhatsAppChannel(messageData) {
     try {
         if (!whatsappSock) return false;
         
-        let thumbnail = null;
-        if (messageData.type === 'media' && messageData.mediaType === 'photo') {
-            thumbnail = await generateThumbnail(messageData.buffer);
-        }
-        
         if (messageData.type === 'text') {
             await whatsappSock.sendMessage(WHATSAPP_CHANNEL, { text: messageData.content });
         } else if (messageData.type === 'media') {
             const mediaBuffer = messageData.buffer;
             const mediaCaption = messageData.caption || '';
-            const mediaFileName = messageData.fileName;
-            const mediaMimeType = messageData.mimeType;
-            const mediaType = messageData.mediaType;
-            const mediaSize = messageData.size;
             
-            const fileSizeMB = mediaSize / (1024 * 1024);
-            let messageOptions = {};
-            
-            if (fileSizeMB > 100) {
-                messageOptions = {
-                    document: mediaBuffer,
-                    fileName: mediaFileName || 'file.bin',
-                    caption: mediaCaption,
-                    mimetype: mediaMimeType
-                };
-            } else {
-                if (mediaType === 'photo') {
-                    messageOptions = { image: mediaBuffer, caption: mediaCaption };
-                    if (thumbnail) messageOptions.jpegThumbnail = thumbnail;
-                } else if (mediaType === 'video') {
-                    messageOptions = { video: mediaBuffer, caption: mediaCaption };
-                } else {
-                    messageOptions = {
-                        document: mediaBuffer,
-                        fileName: mediaFileName || 'file',
-                        caption: mediaCaption,
-                        mimetype: mediaMimeType
-                    };
-                }
+            // Generate thumbnail for images
+            let thumbnail = null;
+            if (messageData.mediaType === 'photo') {
+                thumbnail = await generateThumbnail(mediaBuffer);
             }
+            
+            const messageOptions = {
+                [messageData.mediaType === 'photo' ? 'image' : 
+                 messageData.mediaType === 'video' ? 'video' : 'document']: mediaBuffer,
+                caption: mediaCaption
+            };
+            
+            if (thumbnail && messageData.mediaType === 'photo') {
+                messageOptions.jpegThumbnail = thumbnail;
+            }
+            
             await whatsappSock.sendMessage(WHATSAPP_CHANNEL, messageOptions);
         }
+        log('INFO', `Sent to WhatsApp channel: ${WHATSAPP_CHANNEL}`);
         return true;
     } catch (error) {
+        logError('sendToWhatsAppChannel failed', error);
         return false;
     }
 }
 
 async function sendToTelegramChannel(messageData) {
     try {
-        if (!telegramClient) return false;
+        if (!telegramClient || !telegramClient.connected) return false;
+        
+        // Try to resolve channel entity first
+        let channelEntity;
+        try {
+            channelEntity = await telegramClient.getEntity(TELEGRAM_CHANNEL_ID);
+        } catch (err) {
+            logError('Cannot access Telegram channel - bot might not be admin', err);
+            return false;
+        }
         
         if (messageData.type === 'text') {
-            await telegramClient.sendMessage(TELEGRAM_CHANNEL_ID, { message: messageData.content });
+            await telegramClient.sendMessage(channelEntity, { message: messageData.content });
         } else if (messageData.type === 'media') {
             const mediaBuffer = messageData.buffer;
             const caption = messageData.caption || '';
             
             if (messageData.mediaType === 'photo') {
-                await telegramClient.sendFile(TELEGRAM_CHANNEL_ID, { file: mediaBuffer, caption: caption });
+                await telegramClient.sendFile(channelEntity, { file: mediaBuffer, caption: caption });
             } else if (messageData.mediaType === 'video') {
-                await telegramClient.sendFile(TELEGRAM_CHANNEL_ID, { file: mediaBuffer, caption: caption });
+                await telegramClient.sendFile(channelEntity, { file: mediaBuffer, caption: caption });
             } else {
-                await telegramClient.sendFile(TELEGRAM_CHANNEL_ID, { 
+                await telegramClient.sendFile(channelEntity, { 
                     file: mediaBuffer, 
                     caption: caption,
                     fileName: messageData.fileName 
                 });
             }
         }
+        log('INFO', `Sent to Telegram channel: ${TELEGRAM_CHANNEL_ID}`);
         return true;
     } catch (error) {
+        logError('sendToTelegramChannel failed', error);
         return false;
     }
 }
@@ -301,10 +317,6 @@ async function sendToAllGroups(messageData) {
         if (!whatsappSock) return false;
         
         let successCount = 0;
-        let thumbnail = null;
-        if (messageData.type === 'media' && messageData.mediaType === 'photo') {
-            thumbnail = await generateThumbnail(messageData.buffer);
-        }
         
         for (let i = 0; i < WHATSAPP_GROUPS.length; i++) {
             const target = WHATSAPP_GROUPS[i];
@@ -313,48 +325,37 @@ async function sendToAllGroups(messageData) {
                     await whatsappSock.sendMessage(target, { text: messageData.content });
                     successCount++;
                 } else if (messageData.type === 'media') {
-                    const mediaBuffer = messageData.buffer;
-                    const mediaCaption = messageData.caption || '';
-                    const mediaFileName = messageData.fileName;
-                    const mediaMimeType = messageData.mimeType;
-                    const mediaType = messageData.mediaType;
-                    const mediaSize = messageData.size;
-                    
-                    const fileSizeMB = mediaSize / (1024 * 1024);
-                    let messageOptions = {};
-                    
-                    if (fileSizeMB > 100) {
-                        messageOptions = {
-                            document: mediaBuffer,
-                            fileName: mediaFileName || 'file.bin',
-                            caption: mediaCaption,
-                            mimetype: mediaMimeType
-                        };
-                    } else {
-                        if (mediaType === 'photo') {
-                            messageOptions = { image: mediaBuffer, caption: mediaCaption };
-                            if (thumbnail) messageOptions.jpegThumbnail = thumbnail;
-                        } else if (mediaType === 'video') {
-                            messageOptions = { video: mediaBuffer, caption: mediaCaption };
-                        } else {
-                            messageOptions = {
-                                document: mediaBuffer,
-                                fileName: mediaFileName || 'file',
-                                caption: mediaCaption,
-                                mimetype: mediaMimeType
-                            };
-                        }
+                    let thumbnail = null;
+                    if (messageData.mediaType === 'photo') {
+                        thumbnail = await generateThumbnail(messageData.buffer);
                     }
+                    
+                    const messageOptions = {
+                        [messageData.mediaType === 'photo' ? 'image' : 
+                         messageData.mediaType === 'video' ? 'video' : 'document']: messageData.buffer,
+                        caption: messageData.caption || ''
+                    };
+                    
+                    if (thumbnail && messageData.mediaType === 'photo') {
+                        messageOptions.jpegThumbnail = thumbnail;
+                    }
+                    
                     await whatsappSock.sendMessage(target, messageOptions);
                     successCount++;
                 }
+                
                 if (i < WHATSAPP_GROUPS.length - 1) {
                     await new Promise(resolve => setTimeout(resolve, RATE_LIMIT_DELAY));
                 }
-            } catch (err) {}
+            } catch (err) {
+                logError(`Failed to send to group ${target}`, err);
+            }
         }
+        
+        log('INFO', `Sent to ${successCount}/${WHATSAPP_GROUPS.length} WhatsApp groups`);
         return successCount > 0;
     } catch (error) {
+        logError('sendToAllGroups failed', error);
         return false;
     }
 }
@@ -364,35 +365,31 @@ async function sendToOwnChat(messageData) {
         if (!whatsappSock) return false;
         
         const jid = WHATSAPP_NUMBER.includes('@') ? WHATSAPP_NUMBER : `${WHATSAPP_NUMBER}@s.whatsapp.net`;
-        let thumbnail = null;
-        if (messageData.type === 'media' && messageData.mediaType === 'photo') {
-            thumbnail = await generateThumbnail(messageData.buffer);
-        }
         
         if (messageData.type === 'text') {
             await whatsappSock.sendMessage(jid, { text: messageData.content });
         } else if (messageData.type === 'media') {
-            const mediaBuffer = messageData.buffer;
-            const mediaCaption = messageData.caption || '';
-            const mediaFileName = messageData.fileName;
-            const mediaMimeType = messageData.mimeType;
-            const mediaType = messageData.mediaType;
-            
-            if (mediaType === 'photo') {
-                await whatsappSock.sendMessage(jid, { image: mediaBuffer, caption: mediaCaption });
-            } else if (mediaType === 'video') {
-                await whatsappSock.sendMessage(jid, { video: mediaBuffer, caption: mediaCaption });
-            } else {
-                await whatsappSock.sendMessage(jid, {
-                    document: mediaBuffer,
-                    fileName: mediaFileName || 'file',
-                    caption: mediaCaption,
-                    mimetype: mediaMimeType
-                });
+            let thumbnail = null;
+            if (messageData.mediaType === 'photo') {
+                thumbnail = await generateThumbnail(messageData.buffer);
             }
+            
+            const messageOptions = {
+                [messageData.mediaType === 'photo' ? 'image' : 
+                 messageData.mediaType === 'video' ? 'video' : 'document']: messageData.buffer,
+                caption: messageData.caption || ''
+            };
+            
+            if (thumbnail && messageData.mediaType === 'photo') {
+                messageOptions.jpegThumbnail = thumbnail;
+            }
+            
+            await whatsappSock.sendMessage(jid, messageOptions);
         }
+        log('INFO', `Sent to own chat: ${WHATSAPP_NUMBER}`);
         return true;
     } catch (error) {
+        logError('sendToOwnChat failed', error);
         return false;
     }
 }
@@ -400,15 +397,21 @@ async function sendToOwnChat(messageData) {
 async function sendToAllDestinations(messageData) {
     try {
         let allSuccess = true;
+        
         if (!await sendToWhatsAppChannel(messageData)) allSuccess = false;
-        await new Promise(resolve => setTimeout(resolve, 1000));
+        await new Promise(resolve => setTimeout(resolve, 2000));
+        
         if (!await sendToTelegramChannel(messageData)) allSuccess = false;
-        await new Promise(resolve => setTimeout(resolve, 1000));
+        await new Promise(resolve => setTimeout(resolve, 2000));
+        
         if (!await sendToAllGroups(messageData)) allSuccess = false;
-        await new Promise(resolve => setTimeout(resolve, 1000));
+        await new Promise(resolve => setTimeout(resolve, 2000));
+        
         if (!await sendToOwnChat(messageData)) allSuccess = false;
+        
         return allSuccess;
     } catch (error) {
+        logError('sendToAllDestinations failed', error);
         return false;
     }
 }
@@ -482,12 +485,17 @@ function initTelegramBot() {
             if (success) {
                 await ctx.editMessageText(`✅ Successfully forwarded to ${targetText}`);
             } else {
-                await ctx.editMessageText('❌ Failed to forward');
+                await ctx.editMessageText('❌ Failed to forward. Make sure bot has permissions.');
             }
-        } catch (error) {}
+        } catch (error) {
+            logError('Callback query error', error);
+            try {
+                await ctx.editMessageText('❌ Error processing request.');
+            } catch (e) {}
+        }
     });
     
-    telegramBot.launch().catch(() => {});
+    telegramBot.launch().catch((err) => logError('Telegram bot launch failed', err));
 }
 
 // ===== MAIN BOT FUNCTION =====
@@ -619,11 +627,17 @@ async function startTelegramBridge() {
     if (isActive) return true;
     
     try {
-        if (telegramClient) await telegramClient.disconnect();
+        if (telegramClient) {
+            await telegramClient.disconnect();
+            telegramClient = null;
+        }
         
         telegramClient = new TelegramClient(new StringSession(""), API_ID, API_HASH, {
             connectionRetries: 5,
-            downloadRetries: 3
+            downloadRetries: 3,
+            deviceModel: "Desktop",
+            systemVersion: "Windows 10",
+            appVersion: "1.0.0"
         });
         
         await telegramClient.start({ botAuthToken: TELEGRAM_BOT_TOKEN });
@@ -667,15 +681,26 @@ async function startTelegramBridge() {
                         let fileName = 'file';
                         let mediaType = 'document';
                         
-                        if (msg.photo) { mediaType = 'photo'; fileName = `image_${msg.id}.jpg`; }
-                        else if (msg.video) { mediaType = 'video'; fileName = `video_${msg.id}.mp4`; }
-                        else if (msg.document) {
+                        if (msg.photo) { 
+                            mediaType = 'photo'; 
+                            fileName = `image_${msg.id}.jpg`; 
+                        } else if (msg.video) { 
+                            mediaType = 'video'; 
+                            fileName = `video_${msg.id}.mp4`; 
+                        } else if (msg.document) {
                             mediaType = 'document';
                             const attr = msg.document.attributes.find(a => a.className === 'DocumentAttributeFilename');
-                            fileName = attr?.fileName || `file_${msg.id}.bin`;
-                        } else if (msg.audio) { mediaType = 'audio'; fileName = `audio_${msg.id}.mp3`; }
-                        else if (msg.voice) { mediaType = 'voice'; fileName = `voice_${msg.id}.ogg`; }
-                        else if (msg.sticker) { mediaType = 'sticker'; fileName = `sticker_${msg.id}.webp`; }
+                            fileName = attr?.fileName || `file_${msg.id}.${mediaResult.extension || 'bin'}`;
+                        } else if (msg.audio) { 
+                            mediaType = 'audio'; 
+                            fileName = `audio_${msg.id}.mp3`; 
+                        } else if (msg.voice) { 
+                            mediaType = 'voice'; 
+                            fileName = `voice_${msg.id}.ogg`; 
+                        } else if (msg.sticker) { 
+                            mediaType = 'sticker'; 
+                            fileName = `sticker_${msg.id}.webp`; 
+                        }
                         
                         messageData = {
                             type: 'media',
@@ -687,12 +712,15 @@ async function startTelegramBridge() {
                             caption: formattedText,
                             timestamp: Date.now()
                         };
-                    } else { return; }
+                    } else {
+                        return;
+                    }
                 }
                 
                 const pendingKey = `${chatId}_${msg.id}`;
                 pendingMessages.set(pendingKey, messageData);
                 
+                // Cleanup old messages (5 minutes)
                 const now = Date.now();
                 for (const [key, data] of pendingMessages.entries()) {
                     if (now - data.timestamp > 300000) pendingMessages.delete(key);
@@ -715,7 +743,11 @@ async function startTelegramBridge() {
                         ]
                     }
                 });
-            } catch (err) {}
+                
+                log('INFO', `Forward request sent for message ${msg.id}`);
+            } catch (err) {
+                logError('Message handler error', err);
+            }
         }
         
         telegramClient.addEventHandler(messageHandler, new NewMessage({}));
@@ -725,6 +757,7 @@ async function startTelegramBridge() {
         
     } catch (error) {
         logError('Failed to start bridge', error);
+        isActive = false;
         return false;
     }
 }
@@ -736,10 +769,6 @@ async function stopTelegramBridge() {
         if (telegramClient) {
             await telegramClient.disconnect();
             telegramClient = null;
-        }
-        if (telegramBot) {
-            telegramBot.stop();
-            telegramBot = null;
         }
         if (keepAliveInterval) {
             clearInterval(keepAliveInterval);
@@ -754,15 +783,19 @@ async function stopTelegramBridge() {
     }
 }
 
-startBot().catch(err => {
-    console.error('Fatal error:', err);
+// Graceful shutdown
+process.on('SIGINT', async () => {
+    console.log('\n🛑 Shutting down...');
+    await stopTelegramBridge();
+    process.exit(0);
 });
 
-process.on('SIGINT', async () => {
+process.on('SIGTERM', async () => {
+    console.log('\n🛑 Shutting down...');
     await stopTelegramBridge();
     process.exit(0);
 });
-process.on('SIGTERM', async () => {
-    await stopTelegramBridge();
-    process.exit(0);
+
+startBot().catch(err => {
+    console.error('Fatal error:', err);
 });
