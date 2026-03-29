@@ -38,7 +38,7 @@ const WHATSAPP_GROUPS = [
     "120363161222427319@g.us"
 ];
 const WHATSAPP_CHANNEL = "120363405181626845@newsletter";
-const TELEGRAM_CHANNEL_ID = "-1001287988079"; // Your corrected channel ID
+const TELEGRAM_CHANNEL_ID = "-1001287988079";
 
 // ===== CONSTANTS =====
 const TEMP_DIR = path.join(process.cwd(), 'temp');
@@ -192,26 +192,19 @@ async function downloadMedia(client, message) {
                 const buffer = fs.readFileSync(tempFile);
                 fs.unlinkSync(tempFile);
                 
-                // Determine MIME type and format
                 let mimeType = 'application/octet-stream';
                 let extension = 'bin';
-                let isImage = false;
-                let isVideo = false;
                 
                 if (message.photo) {
                     mimeType = 'image/jpeg';
                     extension = 'jpg';
-                    isImage = true;
                 } else if (message.video) {
                     mimeType = 'video/mp4';
                     extension = 'mp4';
-                    isVideo = true;
                 } else if (message.document) {
                     mimeType = message.document.mimeType || 'application/octet-stream';
                     const attr = message.document.attributes.find(a => a.className === 'DocumentAttributeFilename');
                     extension = attr?.fileName?.split('.').pop() || 'bin';
-                    isImage = mimeType.startsWith('image/');
-                    isVideo = mimeType.startsWith('video/');
                 } else if (message.audio) {
                     mimeType = message.audio.mimeType || 'audio/mpeg';
                     extension = 'mp3';
@@ -224,9 +217,7 @@ async function downloadMedia(client, message) {
                     buffer,
                     size: stats.size,
                     mimeType,
-                    extension,
-                    isImage,
-                    isVideo
+                    extension
                 };
                 
             } catch (err) {
@@ -255,7 +246,6 @@ async function sendToWhatsAppChannel(messageData) {
             const mediaBuffer = messageData.buffer;
             const mediaCaption = messageData.caption || '';
             
-            // Generate thumbnail for images
             let thumbnail = null;
             if (messageData.mediaType === 'photo') {
                 thumbnail = await generateThumbnail(mediaBuffer);
@@ -285,7 +275,6 @@ async function sendToTelegramChannel(messageData) {
     try {
         if (!telegramClient || !telegramClient.connected) return false;
         
-        // Try to resolve channel entity first
         let channelEntity;
         try {
             channelEntity = await telegramClient.getEntity(TELEGRAM_CHANNEL_ID);
@@ -295,42 +284,32 @@ async function sendToTelegramChannel(messageData) {
         }
         
         if (messageData.type === 'text') {
-            // Send text exactly as is, no formatting changes, no forwarded tag
+            // Send ORIGINAL text, NOT WhatsApp converted
             await telegramClient.sendMessage(channelEntity, { 
-                message: messageData.content
+                message: messageData.originalText
             });
         } else if (messageData.type === 'media') {
             const mediaBuffer = messageData.buffer;
-            const caption = messageData.caption || '';
+            // Use ORIGINAL caption, NOT WhatsApp converted
+            const caption = messageData.originalCaption || '';
             
-            // Send as proper media type based on content
             if (messageData.mediaType === 'photo' || (messageData.mimeType && messageData.mimeType.startsWith('image/'))) {
-                // Send as photo/image
                 await telegramClient.sendFile(channelEntity, { 
                     file: mediaBuffer, 
                     caption: caption,
-                    forceDocument: false  // This ensures it sends as photo, not document
+                    forceDocument: false
                 });
             } else if (messageData.mediaType === 'video' || (messageData.mimeType && messageData.mimeType.startsWith('video/'))) {
-                // Send as video
-                await telegramClient.sendFile(channelEntity, { 
-                    file: mediaBuffer, 
-                    caption: caption,
-                    forceDocument: false  // This ensures it sends as video, not document
-                });
-            } else if (messageData.mediaType === 'audio' || (messageData.mimeType && messageData.mimeType.startsWith('audio/'))) {
-                // Send as audio
                 await telegramClient.sendFile(channelEntity, { 
                     file: mediaBuffer, 
                     caption: caption,
                     forceDocument: false
                 });
             } else {
-                // For other file types (documents, etc.)
                 await telegramClient.sendFile(channelEntity, { 
                     file: mediaBuffer, 
                     caption: caption,
-                    fileName: messageData.fileName || 'file'
+                    fileName: messageData.fileName
                 });
             }
         }
@@ -695,13 +674,14 @@ async function startTelegramBridge() {
                 const chatId = msg.chatId?.value?.toString() || msg.peerId?.userId?.toString();
                 if (!chatId) return;
                 
-                const text = msg.text || msg.caption || '';
+                const originalText = msg.text || msg.caption || '';
                 const entities = msg.entities || [];
-                const formattedText = convertTelegramToWhatsApp(text, entities);
+                const formattedText = convertTelegramToWhatsApp(originalText, entities);
                 
                 let messageData = {
                     type: 'text',
-                    content: formattedText,
+                    content: formattedText,      // For WhatsApp
+                    originalText: originalText,  // For Telegram channel
                     timestamp: Date.now()
                 };
                 
@@ -712,10 +692,10 @@ async function startTelegramBridge() {
                         let mediaType = 'document';
                         let mimeType = mediaResult.mimeType;
                         
-                        if (msg.photo || (mimeType && mimeType.startsWith('image/'))) { 
+                        if (msg.photo) { 
                             mediaType = 'photo'; 
                             fileName = `image_${msg.id}.jpg`; 
-                        } else if (msg.video || (mimeType && mimeType.startsWith('video/'))) { 
+                        } else if (msg.video) { 
                             mediaType = 'video'; 
                             fileName = `video_${msg.id}.mp4`; 
                         } else if (msg.document) {
@@ -740,7 +720,8 @@ async function startTelegramBridge() {
                             size: mediaResult.size,
                             mimeType: mediaResult.mimeType,
                             fileName,
-                            caption: formattedText,
+                            caption: formattedText,        // For WhatsApp
+                            originalCaption: originalText, // For Telegram channel
                             timestamp: Date.now()
                         };
                     } else {
@@ -757,7 +738,7 @@ async function startTelegramBridge() {
                     if (now - data.timestamp > 300000) pendingMessages.delete(key);
                 }
                 
-                const previewText = formattedText.length > 100 ? formattedText.substring(0, 100) + '...' : formattedText || '[No text]';
+                const previewText = originalText.length > 100 ? originalText.substring(0, 100) + '...' : originalText || '[No text]';
                 const fileSizeInfo = messageData.type === 'media' ? ` (${(messageData.size / 1024 / 1024).toFixed(2)}MB)` : '';
                 
                 const confirmationMessage = `📨 New Message\n\nPreview: ${previewText}${fileSizeInfo}\n\nForward to?`;
