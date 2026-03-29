@@ -63,7 +63,6 @@ function cleanWhitespace(text) {
     return text.trim();
 }
 
-// SIMPLE HTML ESCAPE - JUST ESCAPE &, <, >
 function escapeHtml(text) {
     if (!text) return text;
     return text
@@ -72,47 +71,114 @@ function escapeHtml(text) {
         .replace(/>/g, '&gt;');
 }
 
-// SIMPLE FORMATTING - LIKE THE PYTHON SCRIPT
+// PROPER NESTED FORMATTING - LIKE PYTHON SCRIPT
 function applyFormatting(text, entities) {
     if (!text) return '';
     
-    // First, escape the text
-    let result = escapeHtml(text);
-    
     if (!entities || entities.length === 0) {
-        return result;
+        return escapeHtml(text);
     }
     
-    // Sort entities by offset (descending) to apply from end to start
-    const sortedEntities = [...entities].sort((a, b) => b.offset - a.offset);
+    // Sort entities by offset (ascending) and length (descending) for proper nesting
+    const sortedEntities = [...entities].sort((a, b) => {
+        if (a.offset !== b.offset) return a.offset - b.offset;
+        return b.length - a.length;
+    });
     
-    // Entity to HTML tag mapping
-    const getTags = (entity) => {
-        switch (entity.type) {
-            case 'bold': return ['<b>', '</b>'];
-            case 'italic': return ['<i>', '</i>'];
-            case 'underline': return ['<u>', '</u>'];
-            case 'strikethrough': return ['<s>', '</s>'];
-            case 'spoiler': return ['<tg-spoiler>', '</tg-spoiler>'];
-            case 'code': return ['<code>', '</code>'];
-            case 'pre': return ['<pre>', '</pre>'];
-            case 'text_link': return [`<a href="${escapeHtml(entity.url)}">`, '</a>'];
-            default: return null;
+    // Build the formatted text with proper nesting
+    let result = '';
+    let lastIndex = 0;
+    let i = 0;
+    
+    while (i < sortedEntities.length) {
+        const entity = sortedEntities[i];
+        
+        // Add text before this entity
+        if (entity.offset > lastIndex) {
+            result += escapeHtml(text.substring(lastIndex, entity.offset));
         }
-    };
+        
+        const entityEnd = entity.offset + entity.length;
+        
+        // Find all entities nested inside this one
+        const nestedEntities = [];
+        let j = i + 1;
+        while (j < sortedEntities.length) {
+            const nextEntity = sortedEntities[j];
+            if (nextEntity.offset >= entity.offset && nextEntity.offset + nextEntity.length <= entityEnd) {
+                nestedEntities.push({
+                    type: nextEntity.type,
+                    offset: nextEntity.offset - entity.offset,
+                    length: nextEntity.length,
+                    url: nextEntity.url
+                });
+                j++;
+            } else {
+                break;
+            }
+        }
+        
+        // Get the content of this entity
+        let entityContent = text.substring(entity.offset, entityEnd);
+        
+        // Apply nested formatting recursively
+        if (nestedEntities.length > 0) {
+            entityContent = applyFormattingSimple(entityContent, nestedEntities);
+        } else {
+            entityContent = escapeHtml(entityContent);
+        }
+        
+        // Get HTML tags for this entity
+        let openTag = '';
+        let closeTag = '';
+        
+        switch (entity.type) {
+            case 'bold':
+                openTag = '<b>';
+                closeTag = '</b>';
+                break;
+            case 'italic':
+                openTag = '<i>';
+                closeTag = '</i>';
+                break;
+            case 'underline':
+                openTag = '<u>';
+                closeTag = '</u>';
+                break;
+            case 'strikethrough':
+                openTag = '<s>';
+                closeTag = '</s>';
+                break;
+            case 'spoiler':
+                openTag = '<tg-spoiler>';
+                closeTag = '</tg-spoiler>';
+                break;
+            case 'code':
+                openTag = '<code>';
+                closeTag = '</code>';
+                break;
+            case 'pre':
+                openTag = '<pre>';
+                closeTag = '</pre>';
+                break;
+            case 'text_link':
+                openTag = `<a href="${escapeHtml(entity.url)}">`;
+                closeTag = '</a>';
+                break;
+            default:
+                openTag = '';
+                closeTag = '';
+        }
+        
+        result += openTag + entityContent + closeTag;
+        
+        i += 1 + nestedEntities.length;
+        lastIndex = entityEnd;
+    }
     
-    for (const entity of sortedEntities) {
-        const tags = getTags(entity);
-        if (!tags) continue;
-        
-        const [openTag, closeTag] = tags;
-        const start = entity.offset;
-        const end = start + entity.length;
-        
-        if (start < 0 || end > result.length || start >= end) continue;
-        
-        const content = result.substring(start, end);
-        result = result.substring(0, start) + openTag + content + closeTag + result.substring(end);
+    // Add remaining text
+    if (lastIndex < text.length) {
+        result += escapeHtml(text.substring(lastIndex));
     }
     
     // Handle blockquotes (lines starting with >)
@@ -123,12 +189,13 @@ function applyFormatting(text, entities) {
         let inBlockquote = false;
         
         for (const line of lines) {
-            if (line.startsWith('>')) {
+            const trimmedLine = line.trimStart();
+            if (trimmedLine.startsWith('>')) {
                 if (!inBlockquote) {
                     newLines.push('<blockquote>');
                     inBlockquote = true;
                 }
-                newLines.push(line.substring(1));
+                newLines.push(trimmedLine.substring(1).trimStart());
             } else {
                 if (inBlockquote) {
                     newLines.push('</blockquote>');
@@ -143,6 +210,66 @@ function applyFormatting(text, entities) {
         }
         
         result = newLines.join('\n');
+    }
+    
+    return result;
+}
+
+// Simple formatting for nested content (no further nesting)
+function applyFormattingSimple(text, entities) {
+    if (!entities || entities.length === 0) return escapeHtml(text);
+    
+    let result = escapeHtml(text);
+    const sortedEntities = [...entities].sort((a, b) => b.offset - a.offset);
+    
+    for (const entity of sortedEntities) {
+        let openTag = '';
+        let closeTag = '';
+        
+        switch (entity.type) {
+            case 'bold':
+                openTag = '<b>';
+                closeTag = '</b>';
+                break;
+            case 'italic':
+                openTag = '<i>';
+                closeTag = '</i>';
+                break;
+            case 'underline':
+                openTag = '<u>';
+                closeTag = '</u>';
+                break;
+            case 'strikethrough':
+                openTag = '<s>';
+                closeTag = '</s>';
+                break;
+            case 'spoiler':
+                openTag = '<tg-spoiler>';
+                closeTag = '</tg-spoiler>';
+                break;
+            case 'code':
+                openTag = '<code>';
+                closeTag = '</code>';
+                break;
+            case 'pre':
+                openTag = '<pre>';
+                closeTag = '</pre>';
+                break;
+            case 'text_link':
+                openTag = `<a href="${escapeHtml(entity.url)}">`;
+                closeTag = '</a>';
+                break;
+            default:
+                continue;
+        }
+        
+        const start = entity.offset;
+        const end = start + entity.length;
+        
+        if (start < 0 || end > result.length || start >= end) continue;
+        
+        const content = result.substring(start, end);
+        result = result.substring(0, start) + openTag + content + closeTag + result.substring(end);
     }
     
     return result;
@@ -252,6 +379,9 @@ async function sendToTelegramChannel(messageData) {
         
         if (messageData.type === 'text') {
             const formattedText = applyFormatting(messageData.originalText, messageData.entities);
+            console.log(`[DEBUG] Formatted text length: ${formattedText.length}`);
+            console.log(`[DEBUG] Formatted text preview: ${formattedText.substring(0, 200)}`);
+            
             await sendBot.sendMessage(TELEGRAM_CHANNEL_ID, formattedText, {
                 parse_mode: 'HTML'
             });
