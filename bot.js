@@ -63,6 +63,7 @@ function cleanWhitespace(text) {
     return text.trim();
 }
 
+// Escape HTML special characters except for our allowed tags
 function escapeHtml(text) {
     if (!text) return text;
     return text
@@ -73,123 +74,58 @@ function escapeHtml(text) {
         .replace(/'/g, '&#39;');
 }
 
-// Adjust entity offsets (handles UTF-16 to character offset conversion)
-function adjustEntityOffsets(text, entities) {
-    if (!entities || entities.length === 0) return [];
-    
-    const result = [];
-    for (const entity of entities) {
-        result.push({
-            type: entity.type,
-            offset: entity.offset,
-            length: entity.length,
-            url: entity.url
-        });
-    }
-    return result;
-}
-
-// Filter allowed entity types
-function filterEntities(entities) {
-    const allowedTypes = ['bold', 'italic', 'code', 'pre', 'underline', 'strikethrough', 'text_link', 'spoiler'];
-    if (!entities) return [];
-    return entities.filter(e => allowedTypes.includes(e.type));
-}
-
-// Apply formatting with support for nested entities (bold+italic combined)
+// Apply formatting with proper HTML escaping
 function applyFormatting(text, entities) {
-    if (!text) return text;
+    if (!text) return '';
     
+    // If no entities, just escape the text
     if (!entities || entities.length === 0) {
         return escapeHtml(text);
     }
     
-    // Sort entities by offset (ascending) and length (descending)
-    const sortedEntities = [...entities].sort((a, b) => {
-        if (a.offset !== b.offset) return a.offset - b.offset;
-        return b.length - a.length;
-    });
+    // Sort entities by offset (descending) to apply from end to start
+    const sortedEntities = [...entities].sort((a, b) => b.offset - a.offset);
+    let result = escapeHtml(text);
     
+    // Allowed HTML tags mapping
     const entityTags = {
-        'bold': ('<b>', '</b>'),
-        'italic': ('<i>', '</i>'),
-        'underline': ('<u>', '</u>'),
-        'strikethrough': ('<s>', '</s>'),
-        'spoiler': ('<tg-spoiler>', '</tg-spoiler>'),
-        'code': ('<code>', '</code>'),
-        'pre': ('<pre>', '</pre>'),
-        'text_link': (e) => [`<a href="${e.url}">`, '</a>']
+        'bold': { open: '<b>', close: '</b>' },
+        'italic': { open: '<i>', close: '</i>' },
+        'underline': { open: '<u>', close: '</u>' },
+        'strikethrough': { open: '<s>', close: '</s>' },
+        'spoiler': { open: '<tg-spoiler>', close: '</tg-spoiler>' },
+        'code': { open: '<code>', close: '</code>' },
+        'pre': { open: '<pre>', close: '</pre>' },
+        'text_link': { open: (e) => `<a href="${escapeHtml(e.url)}">`, close: '</a>' }
     };
     
-    let result = '';
-    let lastIndex = 0;
-    let i = 0;
-    
-    while (i < sortedEntities.length) {
-        const entity = sortedEntities[i];
+    for (const entity of sortedEntities) {
         const entityType = entity.type;
+        if (!entityTags[entityType]) continue;
         
-        if (!entityTags[entityType]) {
-            i++;
-            continue;
-        }
-        
-        // Add text before this entity
-        if (entity.offset > lastIndex) {
-            result += escapeHtml(text.substring(lastIndex, entity.offset));
-        }
-        
-        const entityEnd = entity.offset + entity.length;
-        
-        // Find nested entities within this entity
-        const nestedEntities = [];
-        let j = i + 1;
-        while (j < sortedEntities.length) {
-            const nextEntity = sortedEntities[j];
-            if (nextEntity.offset >= entity.offset && nextEntity.offset + nextEntity.length <= entityEnd) {
-                nestedEntities.push({
-                    type: nextEntity.type,
-                    offset: nextEntity.offset - entity.offset,
-                    length: nextEntity.length,
-                    url: nextEntity.url
-                });
-                j++;
-            } else {
-                break;
-            }
-        }
-        
-        // Get entity content
-        let entityContent = text.substring(entity.offset, entityEnd);
-        
-        // Apply nested formatting
-        if (nestedEntities.length > 0) {
-            entityContent = applyFormattingSimple(entityContent, nestedEntities);
-        } else {
-            entityContent = escapeHtml(entityContent);
-        }
-        
-        // Get tags
         let startTag, endTag;
-        if (typeof entityTags[entityType] === 'function') {
-            [startTag, endTag] = entityTags[entityType](entity);
+        if (typeof entityTags[entityType].open === 'function') {
+            startTag = entityTags[entityType].open(entity);
         } else {
-            [startTag, endTag] = entityTags[entityType];
+            startTag = entityTags[entityType].open;
         }
+        endTag = entityTags[entityType].close;
         
-        result += startTag + entityContent + endTag;
+        const start = entity.offset;
+        const end = start + entity.length;
         
-        i += 1 + nestedEntities.length;
-        lastIndex = entityEnd;
-    }
-    
-    // Add remaining text
-    if (lastIndex < text.length) {
-        result += escapeHtml(text.substring(lastIndex));
+        // Validate bounds
+        if (start < 0 || end > result.length || start >= end) continue;
+        
+        // Extract content
+        let content = result.substring(start, end);
+        
+        // Apply formatting
+        result = result.substring(0, start) + startTag + content + endTag + result.substring(end);
     }
     
     // Handle manual blockquotes (lines starting with >)
-    if (result.includes('>')) {
+    if (result.includes('&gt;')) {
         result = result.replace(/&gt;/g, '>');
         const lines = result.split('\n');
         const formattedLines = [];
@@ -202,6 +138,7 @@ function applyFormatting(text, entities) {
                     formattedLines.push('<blockquote>');
                     inBlockquote = true;
                 }
+                // Remove the '>' character and trim
                 const contentLine = trimmedLine.substring(1).trimStart();
                 formattedLines.push(contentLine);
             } else {
@@ -220,48 +157,38 @@ function applyFormatting(text, entities) {
         result = formattedLines.join('\n');
     }
     
-    // Restore HTML tags that were escaped
-    const htmlTags = ['b', 'i', 'u', 's', 'code', 'pre', 'a', 'tg-spoiler', 'blockquote'];
-    for (const tag of htmlTags) {
-        result = result.replace(new RegExp(`&lt;${tag}&gt;`, 'g'), `<${tag}>`);
-        result = result.replace(new RegExp(`&lt;/${tag}&gt;`, 'g'), `</${tag}>`);
+    // Re-escape any HTML that might have been introduced by the content
+    // But preserve our allowed tags
+    const allowedTags = ['b', 'i', 'u', 's', 'code', 'pre', 'a', 'tg-spoiler', 'blockquote'];
+    
+    // Temporarily protect our tags
+    const protected = [];
+    let protectedResult = result;
+    for (let i = 0; i < allowedTags.length; i++) {
+        const tag = allowedTags[i];
+        const openPattern = new RegExp(`<${tag}([^>]*)>`, 'g');
+        const closePattern = new RegExp(`</${tag}>`, 'g');
+        
+        protectedResult = protectedResult.replace(openPattern, (match) => {
+            protected.push(match);
+            return `__PROTECTED_OPEN_${i}_${protected.length - 1}__`;
+        });
+        protectedResult = protectedResult.replace(closePattern, (match) => {
+            protected.push(match);
+            return `__PROTECTED_CLOSE_${i}_${protected.length - 1}__`;
+        });
     }
     
-    return result;
-}
-
-// Simple formatting for nested content
-function applyFormattingSimple(text, entities) {
-    if (!entities || entities.length === 0) return escapeHtml(text);
+    // Escape any remaining HTML
+    protectedResult = escapeHtml(protectedResult);
     
-    const sortedEntities = [...entities].sort((a, b) => b.offset - a.offset);
-    let result = escapeHtml(text);
-    
-    const entityTags = {
-        'bold': ('<b>', '</b>'),
-        'italic': ('<i>', '</i>'),
-        'underline': ('<u>', '</u>'),
-        'strikethrough': ('<s>', '</s>'),
-        'spoiler': ('<tg-spoiler>', '</tg-spoiler>'),
-        'code': ('<code>', '</code>'),
-        'pre': ('<pre>', '</pre>')
-    };
-    
-    for (const entity of sortedEntities) {
-        const entityType = entity.type;
-        if (!entityTags[entityType]) continue;
-        
-        const [startTag, endTag] = entityTags[entityType];
-        const start = entity.offset;
-        const end = start + entity.length;
-        
-        if (start >= result.length || end > result.length) continue;
-        
-        const content = result.substring(start, end);
-        result = result.substring(0, start) + startTag + content + endTag + result.substring(end);
+    // Restore protected tags
+    for (let i = protected.length - 1; i >= 0; i--) {
+        protectedResult = protectedResult.replace(`__PROTECTED_OPEN_${allowedTags.length}_${i}__`, protected[i]);
+        protectedResult = protectedResult.replace(`__PROTECTED_CLOSE_${allowedTags.length}_${i}__`, protected[i]);
     }
     
-    return result;
+    return protectedResult;
 }
 
 // Convert Telegram entities to WhatsApp format
@@ -368,16 +295,23 @@ async function sendToTelegramChannel(messageData) {
         
         if (messageData.type === 'text') {
             const formattedText = applyFormatting(messageData.originalText, messageData.entities);
-            await sendBot.sendMessage(TELEGRAM_CHANNEL_ID, formattedText, {
-                parse_mode: 'HTML'
-            });
-            console.log(`✅ Text sent to Telegram channel`);
+            
+            // Validate that formatted text doesn't contain invalid HTML
+            if (formattedText && formattedText.length > 0) {
+                await sendBot.sendMessage(TELEGRAM_CHANNEL_ID, formattedText, {
+                    parse_mode: 'HTML',
+                    disable_web_page_preview: true
+                });
+                console.log(`✅ Text sent to Telegram channel`);
+            }
         } else if (messageData.type === 'media') {
             const caption = messageData.originalCaption || '';
             const formattedCaption = applyFormatting(caption, messageData.captionEntities);
             
             const mediaBuffer = messageData.buffer;
-            const tempFilePath = path.join(TEMP_DIR, `send_tg_${Date.now()}.jpg`);
+            const ext = messageData.mediaType === 'photo' ? 'jpg' : 
+                       messageData.mediaType === 'video' ? 'mp4' : 'bin';
+            const tempFilePath = path.join(TEMP_DIR, `send_tg_${Date.now()}.${ext}`);
             fs.writeFileSync(tempFilePath, mediaBuffer);
             
             try {
@@ -542,9 +476,21 @@ function initTelegramBot() {
         console.log(`\n📝 Text from ${ctx.from.username || ctx.from.id}`);
         console.log(`Entities: ${entities.length}`);
         
-        const filteredEntities = filterEntities(entities);
-        const adjustedEntities = adjustEntityOffsets(originalText, filteredEntities);
-        const formattedForWhatsApp = entitiesToWhatsApp(originalText, adjustedEntities);
+        // Filter and adjust entities
+        const filteredEntities = [];
+        for (const entity of entities) {
+            const allowedTypes = ['bold', 'italic', 'underline', 'strikethrough', 'code', 'pre', 'text_link', 'spoiler'];
+            if (allowedTypes.includes(entity.type)) {
+                filteredEntities.push({
+                    type: entity.type,
+                    offset: entity.offset,
+                    length: entity.length,
+                    url: entity.url
+                });
+            }
+        }
+        
+        const formattedForWhatsApp = entitiesToWhatsApp(originalText, filteredEntities);
         
         const uniqueId = `${ctx.chat.id}_${Date.now()}_${Math.random().toString(36).substr(2, 6)}`;
         
@@ -552,7 +498,7 @@ function initTelegramBot() {
             type: 'text',
             content: formattedForWhatsApp,
             originalText: originalText,
-            entities: adjustedEntities,
+            entities: filteredEntities,
             timestamp: Date.now()
         });
         
@@ -586,9 +532,21 @@ function initTelegramBot() {
             const response = await axios.get(fileLink, { responseType: 'arraybuffer' });
             const buffer = Buffer.from(response.data);
             
-            const filteredEntities = filterEntities(entities);
-            const adjustedEntities = adjustEntityOffsets(caption, filteredEntities);
-            const formattedCaption = entitiesToWhatsApp(caption, adjustedEntities);
+            // Filter entities
+            const filteredEntities = [];
+            for (const entity of entities) {
+                const allowedTypes = ['bold', 'italic', 'underline', 'strikethrough', 'code', 'pre', 'text_link', 'spoiler'];
+                if (allowedTypes.includes(entity.type)) {
+                    filteredEntities.push({
+                        type: entity.type,
+                        offset: entity.offset,
+                        length: entity.length,
+                        url: entity.url
+                    });
+                }
+            }
+            
+            const formattedCaption = entitiesToWhatsApp(caption, filteredEntities);
             
             const uniqueId = `${ctx.chat.id}_${Date.now()}_${Math.random().toString(36).substr(2, 6)}`;
             
@@ -599,7 +557,7 @@ function initTelegramBot() {
                 size: buffer.length,
                 caption: formattedCaption,
                 originalCaption: caption,
-                captionEntities: adjustedEntities,
+                captionEntities: filteredEntities,
                 timestamp: Date.now()
             });
             
@@ -637,9 +595,21 @@ function initTelegramBot() {
             const response = await axios.get(fileLink, { responseType: 'arraybuffer' });
             const buffer = Buffer.from(response.data);
             
-            const filteredEntities = filterEntities(entities);
-            const adjustedEntities = adjustEntityOffsets(caption, filteredEntities);
-            const formattedCaption = entitiesToWhatsApp(caption, adjustedEntities);
+            // Filter entities
+            const filteredEntities = [];
+            for (const entity of entities) {
+                const allowedTypes = ['bold', 'italic', 'underline', 'strikethrough', 'code', 'pre', 'text_link', 'spoiler'];
+                if (allowedTypes.includes(entity.type)) {
+                    filteredEntities.push({
+                        type: entity.type,
+                        offset: entity.offset,
+                        length: entity.length,
+                        url: entity.url
+                    });
+                }
+            }
+            
+            const formattedCaption = entitiesToWhatsApp(caption, filteredEntities);
             
             const uniqueId = `${ctx.chat.id}_${Date.now()}_${Math.random().toString(36).substr(2, 6)}`;
             
@@ -650,7 +620,7 @@ function initTelegramBot() {
                 size: buffer.length,
                 caption: formattedCaption,
                 originalCaption: caption,
-                captionEntities: adjustedEntities,
+                captionEntities: filteredEntities,
                 timestamp: Date.now()
             });
             
