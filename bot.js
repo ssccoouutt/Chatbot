@@ -71,75 +71,7 @@ function escapeHtml(text) {
         .replace(/>/g, '&gt;');
 }
 
-// DETECT AND EXTRACT BLOCKQUOTES FROM TEXT (like Python script)
-function extractBlockquotes(text) {
-    if (!text) return { text, blockquoteRanges: [] };
-    
-    const lines = text.split('\n');
-    const blockquoteRanges = [];
-    let inBlockquote = false;
-    let blockquoteStart = -1;
-    let blockquoteEnd = -1;
-    let currentPos = 0;
-    
-    for (let i = 0; i < lines.length; i++) {
-        const line = lines[i];
-        const trimmedLine = line.trimStart();
-        
-        if (trimmedLine.startsWith('>')) {
-            if (!inBlockquote) {
-                inBlockquote = true;
-                blockquoteStart = currentPos;
-            }
-        } else {
-            if (inBlockquote) {
-                inBlockquote = false;
-                blockquoteEnd = currentPos - 1;
-                blockquoteRanges.push({ start: blockquoteStart, end: blockquoteEnd });
-                blockquoteStart = -1;
-                blockquoteEnd = -1;
-            }
-        }
-        
-        currentPos += line.length + 1; // +1 for newline
-    }
-    
-    if (inBlockquote) {
-        blockquoteRanges.push({ start: blockquoteStart, end: text.length - 1 });
-    }
-    
-    return { text, blockquoteRanges };
-}
-
-// Apply blockquote tags to text
-function applyBlockquotes(text, blockquoteRanges) {
-    if (!blockquoteRanges || blockquoteRanges.length === 0) return text;
-    
-    let result = text;
-    // Apply in reverse order to not mess up positions
-    const sortedRanges = [...blockquoteRanges].sort((a, b) => b.start - a.start);
-    
-    for (const range of sortedRanges) {
-        const before = result.substring(0, range.start);
-        const content = result.substring(range.start, range.end + 1);
-        const after = result.substring(range.end + 1);
-        
-        // Remove '>' characters from content and wrap in blockquote
-        const cleanContent = content.split('\n').map(line => {
-            const trimmed = line.trimStart();
-            if (trimmed.startsWith('>')) {
-                return trimmed.substring(1).trimStart();
-            }
-            return line;
-        }).join('\n');
-        
-        result = before + '<blockquote>' + cleanContent + '</blockquote>' + after;
-    }
-    
-    return result;
-}
-
-// PROPER NESTED FORMATTING
+// PROPER NESTED FORMATTING WITH BLOCKQUOTE ENTITY SUPPORT
 function applyFormatting(text, entities) {
     if (!text) return '';
     
@@ -147,31 +79,21 @@ function applyFormatting(text, entities) {
     console.log(`[FORMATTING DEBUG] Original text: ${text.substring(0, 200)}...`);
     console.log(`[FORMATTING DEBUG] Entities count: ${entities?.length || 0}`);
     
-    // FIRST: Extract blockquote ranges from the raw text
-    const { text: cleanText, blockquoteRanges } = extractBlockquotes(text);
-    console.log(`[FORMATTING DEBUG] Blockquote ranges found: ${blockquoteRanges.length}`);
-    
     if (entities && entities.length > 0) {
         for (let i = 0; i < entities.length; i++) {
             console.log(`[FORMATTING DEBUG] Entity ${i}: type=${entities[i].type}, offset=${entities[i].offset}, length=${entities[i].length}`);
         }
     }
     
-    // Filter out blockquote entities (we handle them separately)
-    const filteredEntities = (entities || []).filter(e => e.type !== 'blockquote');
-    console.log(`[FORMATTING DEBUG] Filtered entities count: ${filteredEntities.length}`);
-    
-    if (!filteredEntities || filteredEntities.length === 0) {
-        let escaped = escapeHtml(cleanText);
-        // Apply blockquotes
-        const withBlockquotes = applyBlockquotes(escaped, blockquoteRanges);
-        console.log(`[FORMATTING DEBUG] Final result (no entities): ${withBlockquotes.substring(0, 200)}`);
+    if (!entities || entities.length === 0) {
+        let escaped = escapeHtml(text);
+        console.log(`[FORMATTING DEBUG] Final result (no entities): ${escaped.substring(0, 200)}`);
         console.log(`[FORMATTING DEBUG] ========== END ==========\n`);
-        return withBlockquotes;
+        return escaped;
     }
     
     // Sort entities by offset (ascending) and length (descending) for proper nesting
-    const sortedEntities = [...filteredEntities].sort((a, b) => {
+    const sortedEntities = [...entities].sort((a, b) => {
         if (a.offset !== b.offset) return a.offset - b.offset;
         return b.length - a.length;
     });
@@ -188,7 +110,7 @@ function applyFormatting(text, entities) {
         
         // Add text before this entity
         if (entity.offset > lastIndex) {
-            const beforeText = cleanText.substring(lastIndex, entity.offset);
+            const beforeText = text.substring(lastIndex, entity.offset);
             console.log(`[FORMATTING DEBUG] Adding text before entity: "${beforeText.substring(0, 50)}"`);
             result += escapeHtml(beforeText);
         }
@@ -216,7 +138,7 @@ function applyFormatting(text, entities) {
         console.log(`[FORMATTING DEBUG] Entity type: ${entity.type}, has ${nestedEntities.length} nested entities`);
         
         // Get the content of this entity
-        let entityContent = cleanText.substring(entity.offset, entityEnd);
+        let entityContent = text.substring(entity.offset, entityEnd);
         
         // Apply nested formatting recursively
         if (nestedEntities.length > 0) {
@@ -264,9 +186,13 @@ function applyFormatting(text, entities) {
                 closeTag = '</a>';
                 break;
             case 'url':
-                // Handle URL entities as clickable links
                 openTag = `<a href="${escapeHtml(entityContent)}">`;
                 closeTag = '</a>';
+                break;
+            case 'blockquote':
+                openTag = '<blockquote>';
+                closeTag = '</blockquote>';
+                console.log(`[FORMATTING DEBUG] Processing BLOCKQUOTE entity, content length: ${entityContent.length}`);
                 break;
             default:
                 openTag = '';
@@ -283,21 +209,16 @@ function applyFormatting(text, entities) {
     }
     
     // Add remaining text
-    if (lastIndex < cleanText.length) {
-        const remainingText = cleanText.substring(lastIndex);
+    if (lastIndex < text.length) {
+        const remainingText = text.substring(lastIndex);
         console.log(`[FORMATTING DEBUG] Adding remaining text: "${remainingText.substring(0, 50)}"`);
         result += escapeHtml(remainingText);
     }
     
-    console.log(`[FORMATTING DEBUG] Before blockquote application: ${result.substring(0, 200)}`);
-    
-    // Apply blockquotes to the formatted result
-    const withBlockquotes = applyBlockquotes(result, blockquoteRanges);
-    
-    console.log(`[FORMATTING DEBUG] Final result: ${withBlockquotes.substring(0, 200)}`);
+    console.log(`[FORMATTING DEBUG] Final result: ${result.substring(0, 300)}`);
     console.log(`[FORMATTING DEBUG] ========== END ==========\n`);
     
-    return withBlockquotes;
+    return result;
 }
 
 // Simple formatting for nested content (no further nesting)
@@ -350,6 +271,10 @@ function applyFormattingSimple(text, entities) {
                 const urlContent = result.substring(entity.offset, entity.offset + entity.length);
                 openTag = `<a href="${escapeHtml(urlContent)}">`;
                 closeTag = '</a>';
+                break;
+            case 'blockquote':
+                openTag = '<blockquote>';
+                closeTag = '</blockquote>';
                 break;
             default:
                 continue;
@@ -672,7 +597,7 @@ function initTelegramBot() {
         console.log(`[TELEGRAM BOT] Text preview: ${originalText.substring(0, 200)}`);
         console.log(`[TELEGRAM BOT] Entities count: ${entities.length}`);
         
-        // Convert entities to simple format
+        // Convert entities to simple format - KEEP blockquote entities
         const simpleEntities = entities.map(e => ({
             type: e.type,
             offset: e.offset,
