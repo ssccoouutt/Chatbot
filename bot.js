@@ -71,12 +71,78 @@ function escapeHtml(text) {
         .replace(/>/g, '&gt;');
 }
 
+// PROPER BLOCKQUOTE HANDLING - EXACTLY LIKE PYTHON SCRIPT
+function handleBlockquotes(text) {
+    if (!text) return text;
+    
+    console.log(`[BLOCKQUOTE DEBUG] Input text: ${text.substring(0, 200)}...`);
+    
+    // Split into lines
+    const lines = text.split('\n');
+    const formattedLines = [];
+    let inBlockquote = false;
+    let blockquoteContent = [];
+    
+    for (let i = 0; i < lines.length; i++) {
+        const line = lines[i];
+        const trimmedLine = line.trimStart();
+        
+        // Check if line starts with '>'
+        if (trimmedLine.startsWith('>')) {
+            console.log(`[BLOCKQUOTE DEBUG] Line ${i + 1} starts with '>': ${trimmedLine.substring(0, 50)}`);
+            
+            if (!inBlockquote) {
+                console.log(`[BLOCKQUOTE DEBUG] Starting new blockquote`);
+                formattedLines.push('<blockquote>');
+                inBlockquote = true;
+            }
+            // Remove the '>' character and trim
+            const contentLine = trimmedLine.substring(1).trimStart();
+            formattedLines.push(contentLine);
+            blockquoteContent.push(contentLine);
+        } else {
+            if (inBlockquote) {
+                console.log(`[BLOCKQUOTE DEBUG] Ending blockquote`);
+                formattedLines.push('</blockquote>');
+                inBlockquote = false;
+                blockquoteContent = [];
+            }
+            formattedLines.push(line);
+        }
+    }
+    
+    if (inBlockquote) {
+        console.log(`[BLOCKQUOTE DEBUG] Ending final blockquote`);
+        formattedLines.push('</blockquote>');
+    }
+    
+    const result = formattedLines.join('\n');
+    console.log(`[BLOCKQUOTE DEBUG] Output has blockquotes: ${result.includes('<blockquote>') ? 'YES' : 'NO'}`);
+    
+    return result;
+}
+
 // PROPER NESTED FORMATTING - LIKE PYTHON SCRIPT
 function applyFormatting(text, entities) {
     if (!text) return '';
     
+    console.log(`\n[FORMATTING DEBUG] ========== START ==========`);
+    console.log(`[FORMATTING DEBUG] Original text: ${text.substring(0, 200)}...`);
+    console.log(`[FORMATTING DEBUG] Entities count: ${entities?.length || 0}`);
+    
+    if (entities && entities.length > 0) {
+        for (let i = 0; i < entities.length; i++) {
+            console.log(`[FORMATTING DEBUG] Entity ${i}: type=${entities[i].type}, offset=${entities[i].offset}, length=${entities[i].length}`);
+        }
+    }
+    
     if (!entities || entities.length === 0) {
-        return escapeHtml(text);
+        let escaped = escapeHtml(text);
+        console.log(`[FORMATTING DEBUG] No entities, escaped text: ${escaped.substring(0, 200)}`);
+        const withBlockquotes = handleBlockquotes(escaped);
+        console.log(`[FORMATTING DEBUG] After blockquotes: ${withBlockquotes.substring(0, 200)}`);
+        console.log(`[FORMATTING DEBUG] ========== END ==========\n`);
+        return withBlockquotes;
     }
     
     // Sort entities by offset (ascending) and length (descending) for proper nesting
@@ -84,6 +150,8 @@ function applyFormatting(text, entities) {
         if (a.offset !== b.offset) return a.offset - b.offset;
         return b.length - a.length;
     });
+    
+    console.log(`[FORMATTING DEBUG] Sorted entities count: ${sortedEntities.length}`);
     
     // Build the formatted text with proper nesting
     let result = '';
@@ -95,7 +163,9 @@ function applyFormatting(text, entities) {
         
         // Add text before this entity
         if (entity.offset > lastIndex) {
-            result += escapeHtml(text.substring(lastIndex, entity.offset));
+            const beforeText = text.substring(lastIndex, entity.offset);
+            console.log(`[FORMATTING DEBUG] Adding text before entity: "${beforeText.substring(0, 50)}"`);
+            result += escapeHtml(beforeText);
         }
         
         const entityEnd = entity.offset + entity.length;
@@ -118,11 +188,14 @@ function applyFormatting(text, entities) {
             }
         }
         
+        console.log(`[FORMATTING DEBUG] Entity type: ${entity.type}, has ${nestedEntities.length} nested entities`);
+        
         // Get the content of this entity
         let entityContent = text.substring(entity.offset, entityEnd);
         
         // Apply nested formatting recursively
         if (nestedEntities.length > 0) {
+            console.log(`[FORMATTING DEBUG] Applying nested formatting for ${entity.type}`);
             entityContent = applyFormattingSimple(entityContent, nestedEntities);
         } else {
             entityContent = escapeHtml(entityContent);
@@ -168,9 +241,11 @@ function applyFormatting(text, entities) {
             default:
                 openTag = '';
                 closeTag = '';
+                console.log(`[FORMATTING DEBUG] Unknown entity type: ${entity.type}`);
         }
         
         result += openTag + entityContent + closeTag;
+        console.log(`[FORMATTING DEBUG] Added formatted entity: ${openTag}${entityContent.substring(0, 50)}${closeTag}`);
         
         i += 1 + nestedEntities.length;
         lastIndex = entityEnd;
@@ -178,46 +253,27 @@ function applyFormatting(text, entities) {
     
     // Add remaining text
     if (lastIndex < text.length) {
-        result += escapeHtml(text.substring(lastIndex));
+        const remainingText = text.substring(lastIndex);
+        console.log(`[FORMATTING DEBUG] Adding remaining text: "${remainingText.substring(0, 50)}"`);
+        result += escapeHtml(remainingText);
     }
     
-    // Handle blockquotes (lines starting with >)
-    if (result.includes('&gt;')) {
-        result = result.replace(/&gt;/g, '>');
-        const lines = result.split('\n');
-        const newLines = [];
-        let inBlockquote = false;
-        
-        for (const line of lines) {
-            const trimmedLine = line.trimStart();
-            if (trimmedLine.startsWith('>')) {
-                if (!inBlockquote) {
-                    newLines.push('<blockquote>');
-                    inBlockquote = true;
-                }
-                newLines.push(trimmedLine.substring(1).trimStart());
-            } else {
-                if (inBlockquote) {
-                    newLines.push('</blockquote>');
-                    inBlockquote = false;
-                }
-                newLines.push(line);
-            }
-        }
-        
-        if (inBlockquote) {
-            newLines.push('</blockquote>');
-        }
-        
-        result = newLines.join('\n');
-    }
+    console.log(`[FORMATTING DEBUG] Before blockquote handling: ${result.substring(0, 200)}`);
     
-    return result;
+    // Handle blockquotes
+    const withBlockquotes = handleBlockquotes(result);
+    
+    console.log(`[FORMATTING DEBUG] Final result: ${withBlockquotes.substring(0, 200)}`);
+    console.log(`[FORMATTING DEBUG] ========== END ==========\n`);
+    
+    return withBlockquotes;
 }
 
 // Simple formatting for nested content (no further nesting)
 function applyFormattingSimple(text, entities) {
     if (!entities || entities.length === 0) return escapeHtml(text);
+    
+    console.log(`[SIMPLE DEBUG] Processing ${entities.length} nested entities`);
     
     let result = escapeHtml(text);
     const sortedEntities = [...entities].sort((a, b) => b.offset - a.offset);
@@ -342,6 +398,8 @@ async function sendToWhatsAppChannel(messageData) {
     try {
         if (!whatsappSock) return false;
         
+        console.log(`[WHATSAPP] Sending to WhatsApp channel`);
+        
         if (messageData.type === 'text') {
             await whatsappSock.sendMessage(WHATSAPP_CHANNEL, { text: messageData.content });
         } else if (messageData.type === 'media') {
@@ -365,10 +423,10 @@ async function sendToWhatsAppChannel(messageData) {
             
             await whatsappSock.sendMessage(WHATSAPP_CHANNEL, messageOptions);
         }
-        console.log(`✅ Sent to WhatsApp channel`);
+        console.log(`[WHATSAPP] ✅ Sent successfully`);
         return true;
     } catch (error) {
-        console.error(`❌ Failed to send to WhatsApp channel:`, error.message);
+        console.error(`[WHATSAPP] ❌ Failed:`, error.message);
         return false;
     }
 }
@@ -377,18 +435,23 @@ async function sendToTelegramChannel(messageData) {
     try {
         if (!sendBot) return false;
         
+        console.log(`[TELEGRAM CHANNEL] Sending to channel: ${TELEGRAM_CHANNEL_ID}`);
+        
         if (messageData.type === 'text') {
             const formattedText = applyFormatting(messageData.originalText, messageData.entities);
-            console.log(`[DEBUG] Formatted text length: ${formattedText.length}`);
-            console.log(`[DEBUG] Formatted text preview: ${formattedText.substring(0, 200)}`);
+            console.log(`[TELEGRAM CHANNEL] Final HTML length: ${formattedText.length}`);
+            console.log(`[TELEGRAM CHANNEL] Final HTML preview: ${formattedText.substring(0, 300)}`);
             
             await sendBot.sendMessage(TELEGRAM_CHANNEL_ID, formattedText, {
                 parse_mode: 'HTML'
             });
-            console.log(`✅ Text sent to Telegram channel`);
+            console.log(`[TELEGRAM CHANNEL] ✅ Text sent successfully`);
         } else if (messageData.type === 'media') {
             const caption = messageData.originalCaption || '';
             const formattedCaption = applyFormatting(caption, messageData.captionEntities);
+            
+            console.log(`[TELEGRAM CHANNEL] Media type: ${messageData.mediaType}`);
+            console.log(`[TELEGRAM CHANNEL] Formatted caption length: ${formattedCaption.length}`);
             
             const mediaBuffer = messageData.buffer;
             const ext = messageData.mediaType === 'photo' ? 'jpg' : 
@@ -413,14 +476,14 @@ async function sendToTelegramChannel(messageData) {
                         parse_mode: 'HTML'
                     });
                 }
-                console.log(`✅ ${messageData.mediaType} sent to Telegram channel`);
+                console.log(`[TELEGRAM CHANNEL] ✅ ${messageData.mediaType} sent successfully`);
             } finally {
                 if (fs.existsSync(tempFilePath)) fs.unlinkSync(tempFilePath);
             }
         }
         return true;
     } catch (error) {
-        console.error(`❌ Failed to send to Telegram channel:`, error.message);
+        console.error(`[TELEGRAM CHANNEL] ❌ Failed:`, error.message);
         return false;
     }
 }
@@ -430,6 +493,7 @@ async function sendToAllGroups(messageData) {
         if (!whatsappSock) return false;
         
         let successCount = 0;
+        console.log(`[WHATSAPP GROUPS] Sending to ${WHATSAPP_GROUPS.length} groups`);
         
         for (let i = 0; i < WHATSAPP_GROUPS.length; i++) {
             const target = WHATSAPP_GROUPS[i];
@@ -437,6 +501,7 @@ async function sendToAllGroups(messageData) {
                 if (messageData.type === 'text') {
                     await whatsappSock.sendMessage(target, { text: messageData.content });
                     successCount++;
+                    console.log(`[WHATSAPP GROUPS] ✅ Sent to group ${i + 1}`);
                 } else if (messageData.type === 'media') {
                     let thumbnail = null;
                     if (messageData.mediaType === 'photo') {
@@ -455,20 +520,21 @@ async function sendToAllGroups(messageData) {
                     
                     await whatsappSock.sendMessage(target, messageOptions);
                     successCount++;
+                    console.log(`[WHATSAPP GROUPS] ✅ Media sent to group ${i + 1}`);
                 }
                 
                 if (i < WHATSAPP_GROUPS.length - 1) {
                     await new Promise(resolve => setTimeout(resolve, RATE_LIMIT_DELAY));
                 }
             } catch (err) {
-                console.error(`Failed to send to group:`, err.message);
+                console.error(`[WHATSAPP GROUPS] ❌ Failed to send to group ${i + 1}:`, err.message);
             }
         }
         
-        console.log(`✅ Sent to ${successCount}/${WHATSAPP_GROUPS.length} WhatsApp groups`);
+        console.log(`[WHATSAPP GROUPS] ✅ Sent to ${successCount}/${WHATSAPP_GROUPS.length} groups`);
         return successCount > 0;
     } catch (error) {
-        console.error(`Failed to send to groups:`, error.message);
+        console.error(`[WHATSAPP GROUPS] ❌ Failed:`, error.message);
         return false;
     }
 }
@@ -478,6 +544,7 @@ async function sendToOwnChat(messageData) {
         if (!whatsappSock) return false;
         
         const jid = WHATSAPP_NUMBER.includes('@') ? WHATSAPP_NUMBER : `${WHATSAPP_NUMBER}@s.whatsapp.net`;
+        console.log(`[WHATSAPP OWN] Sending to: ${jid}`);
         
         if (messageData.type === 'text') {
             await whatsappSock.sendMessage(jid, { text: messageData.content });
@@ -499,10 +566,10 @@ async function sendToOwnChat(messageData) {
             
             await whatsappSock.sendMessage(jid, messageOptions);
         }
-        console.log(`✅ Sent to own chat`);
+        console.log(`[WHATSAPP OWN] ✅ Sent successfully`);
         return true;
     } catch (error) {
-        console.error(`Failed to send to own chat:`, error.message);
+        console.error(`[WHATSAPP OWN] ❌ Failed:`, error.message);
         return false;
     }
 }
@@ -510,17 +577,24 @@ async function sendToOwnChat(messageData) {
 async function sendToAllDestinations(messageData) {
     let allSuccess = true;
     
+    console.log(`\n[ALL DESTINATIONS] ========== STARTING ==========`);
+    
+    console.log(`[ALL DESTINATIONS] Sending to WhatsApp channel...`);
     if (!await sendToWhatsAppChannel(messageData)) allSuccess = false;
     await new Promise(resolve => setTimeout(resolve, 2000));
     
+    console.log(`[ALL DESTINATIONS] Sending to Telegram channel...`);
     if (!await sendToTelegramChannel(messageData)) allSuccess = false;
     await new Promise(resolve => setTimeout(resolve, 2000));
     
+    console.log(`[ALL DESTINATIONS] Sending to WhatsApp groups...`);
     if (!await sendToAllGroups(messageData)) allSuccess = false;
     await new Promise(resolve => setTimeout(resolve, 2000));
     
+    console.log(`[ALL DESTINATIONS] Sending to own chat...`);
     if (!await sendToOwnChat(messageData)) allSuccess = false;
     
+    console.log(`[ALL DESTINATIONS] ========== COMPLETE (Success: ${allSuccess}) ==========\n`);
     return allSuccess;
 }
 
@@ -555,8 +629,12 @@ function initTelegramBot() {
         const originalText = message.text;
         const entities = message.entities || [];
         
-        console.log(`\n📝 Text from ${ctx.from.username || ctx.from.id}`);
-        console.log(`Entities: ${entities.length}`);
+        console.log(`\n${'='.repeat(60)}`);
+        console.log(`[TELEGRAM BOT] 📝 Text message received`);
+        console.log(`[TELEGRAM BOT] From: ${ctx.from.username || ctx.from.id}`);
+        console.log(`[TELEGRAM BOT] Text length: ${originalText.length}`);
+        console.log(`[TELEGRAM BOT] Text preview: ${originalText.substring(0, 200)}`);
+        console.log(`[TELEGRAM BOT] Entities count: ${entities.length}`);
         
         // Convert entities to simple format
         const simpleEntities = entities.map(e => ({
@@ -567,6 +645,7 @@ function initTelegramBot() {
         }));
         
         const formattedForWhatsApp = entitiesToWhatsApp(originalText, simpleEntities);
+        console.log(`[TELEGRAM BOT] WhatsApp formatted preview: ${formattedForWhatsApp.substring(0, 200)}`);
         
         const uniqueId = `${ctx.chat.id}_${Date.now()}_${Math.random().toString(36).substr(2, 6)}`;
         
@@ -592,6 +671,7 @@ function initTelegramBot() {
         };
         
         await ctx.reply(`📨 New Message\n\nPreview: ${originalText.substring(0, 100)}${originalText.length > 100 ? '...' : ''}\n\nForward to?`, opts);
+        console.log(`[TELEGRAM BOT] Confirmation sent to user`);
     });
     
     telegrafBot.on('photo', async (ctx) => {
@@ -600,13 +680,20 @@ function initTelegramBot() {
         const entities = message.caption_entities || [];
         const photo = message.photo[message.photo.length - 1];
         
-        console.log(`\n📸 Photo from ${ctx.from.username || ctx.from.id}`);
-        console.log(`Entities: ${entities.length}`);
+        console.log(`\n${'='.repeat(60)}`);
+        console.log(`[TELEGRAM BOT] 📸 Photo received`);
+        console.log(`[TELEGRAM BOT] From: ${ctx.from.username || ctx.from.id}`);
+        console.log(`[TELEGRAM BOT] Caption length: ${caption.length}`);
+        console.log(`[TELEGRAM BOT] Caption preview: ${caption.substring(0, 200)}`);
+        console.log(`[TELEGRAM BOT] Entities count: ${entities.length}`);
         
         try {
             const fileLink = await ctx.telegram.getFileLink(photo.file_id);
+            console.log(`[TELEGRAM BOT] Photo file link: ${fileLink}`);
+            
             const response = await axios.get(fileLink, { responseType: 'arraybuffer' });
             const buffer = Buffer.from(response.data);
+            console.log(`[TELEGRAM BOT] Photo size: ${buffer.length} bytes`);
             
             const simpleEntities = entities.map(e => ({
                 type: e.type,
@@ -616,6 +703,7 @@ function initTelegramBot() {
             }));
             
             const formattedCaption = entitiesToWhatsApp(caption, simpleEntities);
+            console.log(`[TELEGRAM BOT] WhatsApp formatted caption preview: ${formattedCaption.substring(0, 200)}`);
             
             const uniqueId = `${ctx.chat.id}_${Date.now()}_${Math.random().toString(36).substr(2, 6)}`;
             
@@ -644,8 +732,9 @@ function initTelegramBot() {
             };
             
             await ctx.reply(`📨 New Photo\n\nCaption: ${caption.substring(0, 100)}${caption.length > 100 ? '...' : ''}\n\nForward to?`, opts);
+            console.log(`[TELEGRAM BOT] Confirmation sent to user`);
         } catch (error) {
-            console.error('Error processing photo:', error.message);
+            console.error(`[TELEGRAM BOT] Error processing photo:`, error.message);
             await ctx.reply('❌ Failed to process image.');
         }
     });
@@ -656,13 +745,20 @@ function initTelegramBot() {
         const entities = message.caption_entities || [];
         const video = message.video;
         
-        console.log(`\n🎥 Video from ${ctx.from.username || ctx.from.id}`);
-        console.log(`Entities: ${entities.length}`);
+        console.log(`\n${'='.repeat(60)}`);
+        console.log(`[TELEGRAM BOT] 🎥 Video received`);
+        console.log(`[TELEGRAM BOT] From: ${ctx.from.username || ctx.from.id}`);
+        console.log(`[TELEGRAM BOT] Caption length: ${caption.length}`);
+        console.log(`[TELEGRAM BOT] Caption preview: ${caption.substring(0, 200)}`);
+        console.log(`[TELEGRAM BOT] Entities count: ${entities.length}`);
         
         try {
             const fileLink = await ctx.telegram.getFileLink(video.file_id);
+            console.log(`[TELEGRAM BOT] Video file link: ${fileLink}`);
+            
             const response = await axios.get(fileLink, { responseType: 'arraybuffer' });
             const buffer = Buffer.from(response.data);
+            console.log(`[TELEGRAM BOT] Video size: ${buffer.length} bytes`);
             
             const simpleEntities = entities.map(e => ({
                 type: e.type,
@@ -672,6 +768,7 @@ function initTelegramBot() {
             }));
             
             const formattedCaption = entitiesToWhatsApp(caption, simpleEntities);
+            console.log(`[TELEGRAM BOT] WhatsApp formatted caption preview: ${formattedCaption.substring(0, 200)}`);
             
             const uniqueId = `${ctx.chat.id}_${Date.now()}_${Math.random().toString(36).substr(2, 6)}`;
             
@@ -700,8 +797,9 @@ function initTelegramBot() {
             };
             
             await ctx.reply(`📨 New Video\n\nCaption: ${caption.substring(0, 100)}${caption.length > 100 ? '...' : ''}\n\nForward to?`, opts);
+            console.log(`[TELEGRAM BOT] Confirmation sent to user`);
         } catch (error) {
-            console.error('Error processing video:', error.message);
+            console.error(`[TELEGRAM BOT] Error processing video:`, error.message);
             await ctx.reply('❌ Failed to process video.');
         }
     });
@@ -712,9 +810,13 @@ function initTelegramBot() {
         const target = parts.pop();
         const uniqueId = parts.join('_');
         
+        console.log(`\n[TELEGRAM BOT] 🔘 Callback received: ${callbackData}`);
+        console.log(`[TELEGRAM BOT] Target: ${target}, UniqueId: ${uniqueId}`);
+        
         const messageData = pendingMessages.get(uniqueId);
         
         if (!messageData) {
+            console.log(`[TELEGRAM BOT] ❌ Message expired or not found`);
             await ctx.answerCbQuery('❌ Message expired!');
             await ctx.editMessageText('❌ This message has expired.');
             return;
@@ -724,12 +826,15 @@ function initTelegramBot() {
         pendingMessages.delete(uniqueId);
         
         if (target === 'cancel') {
+            console.log(`[TELEGRAM BOT] User cancelled forwarding`);
             await ctx.editMessageText('❌ Cancelled.');
             return;
         }
         
         let success = false;
         let targetText = '';
+        
+        console.log(`[TELEGRAM BOT] Processing forward to: ${target}`);
         
         if (target === 'channel') {
             success = await sendToWhatsAppChannel(messageData);
@@ -749,8 +854,10 @@ function initTelegramBot() {
         }
         
         if (success) {
+            console.log(`[TELEGRAM BOT] ✅ Forward successful to ${targetText}`);
             await ctx.editMessageText(`✅ Successfully forwarded to ${targetText}`);
         } else {
+            console.log(`[TELEGRAM BOT] ❌ Forward failed to ${targetText}`);
             await ctx.editMessageText('❌ Failed to forward.');
         }
     });
@@ -776,11 +883,12 @@ async function startBot() {
     sock.ev.on("connection.update", (update) => {
         const { connection, lastDisconnect, qr } = update;
         if (qr) {
+            console.log(`[DEBUG] QR Code received, scanning...`);
             qrcode.generate(qr, { small: true });
         }
         if (connection === "close") {
             const shouldReconnect = (lastDisconnect.error instanceof Boom)?.output?.statusCode !== DisconnectReason.loggedOut;
-            console.log(`Connection closed, reconnecting: ${shouldReconnect}`);
+            console.log(`[DEBUG] Connection closed, reconnecting: ${shouldReconnect}`);
             if (shouldReconnect) startBot();
         } else if (connection === "open") {
             console.log("\n✅✅✅ WHATSAPP BOT CONNECTED SUCCESSFULLY! ✅✅✅");
@@ -815,9 +923,10 @@ async function startBot() {
         else return;
 
         const userMessage = text.toLowerCase().trim();
-        console.log(`[WHATSAPP PRIVATE] ${from}: ${text}`);
+        console.log(`[WHATSAPP PRIVATE] 📱 Message from ${from}: ${text}`);
 
         if (userMessage === '.ping') {
+            console.log(`[WHATSAPP PRIVATE] Sending pong`);
             await sock.sendMessage(from, { text: 'pong 🏓' });
         }
         else if (userMessage === '.help' || userMessage === '.menu') {
