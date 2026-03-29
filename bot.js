@@ -73,7 +73,7 @@ function escapeHtml(text) {
         .replace(/'/g, '&#39;');
 }
 
-// Filter entities to only supported formatting types (like Python's filter_entities)
+// Filter entities to only supported formatting types
 function filterEntities(entities) {
     const allowedTypes = new Set([
         'bold', 'italic', 'code', 'pre', 'underline', 
@@ -82,107 +82,103 @@ function filterEntities(entities) {
     return entities.filter(e => allowedTypes.has(e.type));
 }
 
-// Adjust entity offsets for multi-code-point characters (like Python's adjust_entity_offsets)
-function adjustEntityOffsets(text, entities) {
-    if (!entities || entities.length === 0) return entities;
-    
-    // Create a mapping of UTF-16 code unit positions to character positions
-    const posMap = new Map();
-    let charPos = 0;
-    let utf16Pos = 0;
-    
-    for (const char of text) {
-        posMap.set(utf16Pos, charPos);
-        utf16Pos += Buffer.byteLength(char, 'utf16le') / 2;
-        charPos++;
-    }
-    
-    const adjustedEntities = [];
-    for (const entity of entities) {
-        const start = posMap.get(entity.offset) ?? entity.offset;
-        const end = posMap.get(entity.offset + entity.length) ?? entity.offset + entity.length;
-        
-        adjustedEntities.push({
-            ...entity,
-            offset: start,
-            length: end - start
-        });
-    }
-    
-    return adjustedEntities;
-}
-
-// Apply Telegram formatting with proper nesting (exactly like Python's apply_telegram_formatting)
+// Apply Telegram formatting with proper nesting (fixed version)
 function applyTelegramFormatting(text, entities) {
     if (!text) return text;
     
-    // Convert to array for character-level manipulation
-    let chars = [...text];
-    let textLength = chars.length;
+    if (!entities || entities.length === 0) return escapeHtml(text);
     
-    // Sort entities by offset in reverse order
-    const sortedEntities = [...entities].sort((a, b) => b.offset - a.offset);
+    // Sort entities by start offset
+    const sortedEntities = [...entities].sort((a, b) => a.offset - b.offset);
     
-    // Entity processing map
-    const entityTags = {
-        'bold': ['<b>', '</b>'],
-        'italic': ['<i>', '</i>'],
-        'underline': ['<u>', '</u>'],
-        'strikethrough': ['<s>', '</s>'],
-        'spoiler': ['<tg-spoiler>', '</tg-spoiler>'],
-        'code': ['<code>', '</code>'],
-        'pre': ['<pre>', '</pre>'],
-        'text_link': [null, '</a>']
-    };
+    // Build HTML by processing text and entities together
+    let result = '';
+    let lastIndex = 0;
+    const openTags = [];
     
     for (const entity of sortedEntities) {
-        const entityType = entity.type;
-        if (!entityTags[entityType]) continue;
-        
-        let startTag, endTag;
-        if (entityType === 'text_link') {
-            startTag = `<a href="${escapeHtml(entity.url)}">`;
-            endTag = '</a>';
-        } else {
-            [startTag, endTag] = entityTags[entityType];
+        // Add text before this entity
+        if (entity.offset > lastIndex) {
+            result += escapeHtml(text.substring(lastIndex, entity.offset));
         }
         
-        let start = entity.offset;
-        let end = start + entity.length;
-        
-        // Validate positions
-        if (start >= textLength || end > textLength) continue;
-        
-        // Extract content
-        const before = chars.slice(0, start).join('');
-        const content = chars.slice(start, end).join('');
-        const after = chars.slice(end).join('');
-        
-        // Special handling for blockquotes to prevent nesting issues
-        if (entityType === 'blockquote') {
-            const cleanContent = content.replace(/<[/]?[biu]>|<\/?[su]>|<\/?code>|<\/?pre>|<\/?a>/g, '');
-            chars = [...before + startTag + cleanContent + endTag + after];
-        } else {
-            chars = [...before + startTag + content + endTag + after];
+        // Close tags that end before this entity starts
+        while (openTags.length > 0 && openTags[openTags.length - 1].end <= entity.offset) {
+            const closed = openTags.pop();
+            result += closed.closeTag;
         }
-        textLength = chars.length;
+        
+        // Get the tag for this entity
+        let openTag = '';
+        let closeTag = '';
+        
+        switch (entity.type) {
+            case 'bold':
+                openTag = '<b>';
+                closeTag = '</b>';
+                break;
+            case 'italic':
+                openTag = '<i>';
+                closeTag = '</i>';
+                break;
+            case 'underline':
+                openTag = '<u>';
+                closeTag = '</u>';
+                break;
+            case 'strikethrough':
+                openTag = '<s>';
+                closeTag = '</s>';
+                break;
+            case 'code':
+                openTag = '<code>';
+                closeTag = '</code>';
+                break;
+            case 'pre':
+                openTag = '<pre>';
+                closeTag = '</pre>';
+                break;
+            case 'text_link':
+                openTag = `<a href="${escapeHtml(entity.url)}">`;
+                closeTag = '</a>';
+                break;
+            case 'spoiler':
+                openTag = '<tg-spoiler>';
+                closeTag = '</tg-spoiler>';
+                break;
+            default:
+                continue;
+        }
+        
+        result += openTag;
+        openTags.push({ end: entity.offset + entity.length, closeTag: closeTag });
+        lastIndex = entity.offset;
+    }
+    
+    // Add remaining text
+    if (lastIndex < text.length) {
+        result += escapeHtml(text.substring(lastIndex));
+    }
+    
+    // Close any remaining open tags
+    while (openTags.length > 0) {
+        const closed = openTags.pop();
+        result += closed.closeTag;
     }
     
     // Handle manual blockquotes (lines starting with >)
-    let formattedText = chars.join('');
-    if (formattedText.includes('>')) {
-        formattedText = formattedText.replace(/&gt;/g, '>');
-        const lines = formattedText.split('\n');
+    if (result.includes('&gt;')) {
+        const lines = result.split('\n');
         const formattedLines = [];
         let inBlockquote = false;
         
         for (const line of lines) {
-            if (line.startsWith('>')) {
+            const trimmedLine = line.trim();
+            if (trimmedLine.startsWith('&gt;')) {
                 if (!inBlockquote) {
                     formattedLines.push('<blockquote>');
                     inBlockquote = true;
                 }
-                formattedLines.push(line.substring(1).trim());
+                formattedLines.push(trimmedLine.substring(4).trim());
             } else {
                 if (inBlockquote) {
                     formattedLines.push('</blockquote>');
@@ -196,23 +192,20 @@ function applyTelegramFormatting(text, entities) {
             formattedLines.push('</blockquote>');
         }
         
-        formattedText = formattedLines.join('\n');
+        result = formattedLines.join('\n');
     }
     
-    // Final HTML escaping (except for our tags)
-    formattedText = formattedText.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    // Fix any malformed nested tags
+    result = result.replace(/<\/b><\/i>/g, '</i></b>');
+    result = result.replace(/<\/b><\/u>/g, '</u></b>');
+    result = result.replace(/<\/i><\/u>/g, '</u></i>');
+    result = result.replace(/<\/b><\/s>/g, '</s></b>');
+    result = result.replace(/<\/i><\/s>/g, '</s></i>');
     
-    // Re-insert our HTML tags
-    const htmlTags = ['b', 'i', 'u', 's', 'code', 'pre', 'a', 'tg-spoiler', 'blockquote'];
-    for (const tag of htmlTags) {
-        formattedText = formattedText.replace(new RegExp(`&lt;${tag}&gt;`, 'g'), `<${tag}>`);
-        formattedText = formattedText.replace(new RegExp(`&lt;/${tag}&gt;`, 'g'), `</${tag}>`);
-    }
-    
-    return formattedText;
+    return result;
 }
 
-// Convert Telegram entities to WhatsApp format (like Python's clean_whatsapp_text)
+// Convert Telegram entities to WhatsApp format
 function entitiesToWhatsApp(text, entities) {
     if (!text) return text;
     
@@ -319,21 +312,21 @@ async function sendToTelegramChannel(messageData) {
         if (!sendBot) return false;
         
         if (messageData.type === 'text') {
-            // Filter and adjust entities like Python version
             const filteredEntities = filterEntities(messageData.entities || []);
-            const adjustedEntities = adjustEntityOffsets(messageData.originalText, filteredEntities);
-            const formattedText = applyTelegramFormatting(messageData.originalText, adjustedEntities);
+            const formattedText = applyTelegramFormatting(messageData.originalText, filteredEntities);
+            
+            console.log(`[DEBUG] Original: ${messageData.originalText.substring(0, 100)}`);
+            console.log(`[DEBUG] Formatted: ${formattedText.substring(0, 100)}`);
             
             await sendBot.sendMessage(TELEGRAM_CHANNEL_ID, formattedText, {
                 parse_mode: 'HTML',
                 disable_web_page_preview: true
             });
-            console.log(`✅ Text sent to Telegram channel with formatting`);
+            console.log(`✅ Text sent to Telegram channel`);
         } else if (messageData.type === 'media') {
             const caption = messageData.originalCaption || '';
             const filteredEntities = filterEntities(messageData.captionEntities || []);
-            const adjustedEntities = adjustEntityOffsets(caption, filteredEntities);
-            const formattedCaption = applyTelegramFormatting(caption, adjustedEntities);
+            const formattedCaption = applyTelegramFormatting(caption, filteredEntities);
             
             const mediaBuffer = messageData.buffer;
             const tempFilePath = path.join(TEMP_DIR, `send_tg_${Date.now()}.jpg`);
@@ -356,7 +349,7 @@ async function sendToTelegramChannel(messageData) {
                         parse_mode: 'HTML'
                     });
                 }
-                console.log(`✅ ${messageData.mediaType} sent to Telegram channel with formatting`);
+                console.log(`✅ ${messageData.mediaType} sent to Telegram channel`);
             } finally {
                 if (fs.existsSync(tempFilePath)) fs.unlinkSync(tempFilePath);
             }
