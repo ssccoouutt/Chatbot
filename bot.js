@@ -63,132 +63,89 @@ function cleanWhitespace(text) {
     return text.trim();
 }
 
-// Escape HTML special characters except for our allowed tags
+// SIMPLE HTML ESCAPE - JUST ESCAPE &, <, >
 function escapeHtml(text) {
     if (!text) return text;
     return text
         .replace(/&/g, '&amp;')
         .replace(/</g, '&lt;')
-        .replace(/>/g, '&gt;')
-        .replace(/"/g, '&quot;')
-        .replace(/'/g, '&#39;');
+        .replace(/>/g, '&gt;');
 }
 
-// Apply formatting with proper HTML escaping
+// SIMPLE FORMATTING - LIKE THE PYTHON SCRIPT
 function applyFormatting(text, entities) {
     if (!text) return '';
     
-    // If no entities, just escape the text
+    // First, escape the text
+    let result = escapeHtml(text);
+    
     if (!entities || entities.length === 0) {
-        return escapeHtml(text);
+        return result;
     }
     
     // Sort entities by offset (descending) to apply from end to start
     const sortedEntities = [...entities].sort((a, b) => b.offset - a.offset);
-    let result = escapeHtml(text);
     
-    // Allowed HTML tags mapping
-    const entityTags = {
-        'bold': { open: '<b>', close: '</b>' },
-        'italic': { open: '<i>', close: '</i>' },
-        'underline': { open: '<u>', close: '</u>' },
-        'strikethrough': { open: '<s>', close: '</s>' },
-        'spoiler': { open: '<tg-spoiler>', close: '</tg-spoiler>' },
-        'code': { open: '<code>', close: '</code>' },
-        'pre': { open: '<pre>', close: '</pre>' },
-        'text_link': { open: (e) => `<a href="${escapeHtml(e.url)}">`, close: '</a>' }
+    // Entity to HTML tag mapping
+    const getTags = (entity) => {
+        switch (entity.type) {
+            case 'bold': return ['<b>', '</b>'];
+            case 'italic': return ['<i>', '</i>'];
+            case 'underline': return ['<u>', '</u>'];
+            case 'strikethrough': return ['<s>', '</s>'];
+            case 'spoiler': return ['<tg-spoiler>', '</tg-spoiler>'];
+            case 'code': return ['<code>', '</code>'];
+            case 'pre': return ['<pre>', '</pre>'];
+            case 'text_link': return [`<a href="${escapeHtml(entity.url)}">`, '</a>'];
+            default: return null;
+        }
     };
     
     for (const entity of sortedEntities) {
-        const entityType = entity.type;
-        if (!entityTags[entityType]) continue;
+        const tags = getTags(entity);
+        if (!tags) continue;
         
-        let startTag, endTag;
-        if (typeof entityTags[entityType].open === 'function') {
-            startTag = entityTags[entityType].open(entity);
-        } else {
-            startTag = entityTags[entityType].open;
-        }
-        endTag = entityTags[entityType].close;
-        
+        const [openTag, closeTag] = tags;
         const start = entity.offset;
         const end = start + entity.length;
         
-        // Validate bounds
         if (start < 0 || end > result.length || start >= end) continue;
         
-        // Extract content
-        let content = result.substring(start, end);
-        
-        // Apply formatting
-        result = result.substring(0, start) + startTag + content + endTag + result.substring(end);
+        const content = result.substring(start, end);
+        result = result.substring(0, start) + openTag + content + closeTag + result.substring(end);
     }
     
-    // Handle manual blockquotes (lines starting with >)
+    // Handle blockquotes (lines starting with >)
     if (result.includes('&gt;')) {
         result = result.replace(/&gt;/g, '>');
         const lines = result.split('\n');
-        const formattedLines = [];
+        const newLines = [];
         let inBlockquote = false;
         
         for (const line of lines) {
-            const trimmedLine = line.trimStart();
-            if (trimmedLine.startsWith('>')) {
+            if (line.startsWith('>')) {
                 if (!inBlockquote) {
-                    formattedLines.push('<blockquote>');
+                    newLines.push('<blockquote>');
                     inBlockquote = true;
                 }
-                // Remove the '>' character and trim
-                const contentLine = trimmedLine.substring(1).trimStart();
-                formattedLines.push(contentLine);
+                newLines.push(line.substring(1));
             } else {
                 if (inBlockquote) {
-                    formattedLines.push('</blockquote>');
+                    newLines.push('</blockquote>');
                     inBlockquote = false;
                 }
-                formattedLines.push(line);
+                newLines.push(line);
             }
         }
         
         if (inBlockquote) {
-            formattedLines.push('</blockquote>');
+            newLines.push('</blockquote>');
         }
         
-        result = formattedLines.join('\n');
+        result = newLines.join('\n');
     }
     
-    // Re-escape any HTML that might have been introduced by the content
-    // But preserve our allowed tags
-    const allowedTags = ['b', 'i', 'u', 's', 'code', 'pre', 'a', 'tg-spoiler', 'blockquote'];
-    
-    // Temporarily protect our tags
-    const protected = [];
-    let protectedResult = result;
-    for (let i = 0; i < allowedTags.length; i++) {
-        const tag = allowedTags[i];
-        const openPattern = new RegExp(`<${tag}([^>]*)>`, 'g');
-        const closePattern = new RegExp(`</${tag}>`, 'g');
-        
-        protectedResult = protectedResult.replace(openPattern, (match) => {
-            protected.push(match);
-            return `__PROTECTED_OPEN_${i}_${protected.length - 1}__`;
-        });
-        protectedResult = protectedResult.replace(closePattern, (match) => {
-            protected.push(match);
-            return `__PROTECTED_CLOSE_${i}_${protected.length - 1}__`;
-        });
-    }
-    
-    // Escape any remaining HTML
-    protectedResult = escapeHtml(protectedResult);
-    
-    // Restore protected tags
-    for (let i = protected.length - 1; i >= 0; i--) {
-        protectedResult = protectedResult.replace(`__PROTECTED_OPEN_${allowedTags.length}_${i}__`, protected[i]);
-        protectedResult = protectedResult.replace(`__PROTECTED_CLOSE_${allowedTags.length}_${i}__`, protected[i]);
-    }
-    
-    return protectedResult;
+    return result;
 }
 
 // Convert Telegram entities to WhatsApp format
@@ -295,15 +252,10 @@ async function sendToTelegramChannel(messageData) {
         
         if (messageData.type === 'text') {
             const formattedText = applyFormatting(messageData.originalText, messageData.entities);
-            
-            // Validate that formatted text doesn't contain invalid HTML
-            if (formattedText && formattedText.length > 0) {
-                await sendBot.sendMessage(TELEGRAM_CHANNEL_ID, formattedText, {
-                    parse_mode: 'HTML',
-                    disable_web_page_preview: true
-                });
-                console.log(`✅ Text sent to Telegram channel`);
-            }
+            await sendBot.sendMessage(TELEGRAM_CHANNEL_ID, formattedText, {
+                parse_mode: 'HTML'
+            });
+            console.log(`✅ Text sent to Telegram channel`);
         } else if (messageData.type === 'media') {
             const caption = messageData.originalCaption || '';
             const formattedCaption = applyFormatting(caption, messageData.captionEntities);
@@ -476,21 +428,15 @@ function initTelegramBot() {
         console.log(`\n📝 Text from ${ctx.from.username || ctx.from.id}`);
         console.log(`Entities: ${entities.length}`);
         
-        // Filter and adjust entities
-        const filteredEntities = [];
-        for (const entity of entities) {
-            const allowedTypes = ['bold', 'italic', 'underline', 'strikethrough', 'code', 'pre', 'text_link', 'spoiler'];
-            if (allowedTypes.includes(entity.type)) {
-                filteredEntities.push({
-                    type: entity.type,
-                    offset: entity.offset,
-                    length: entity.length,
-                    url: entity.url
-                });
-            }
-        }
+        // Convert entities to simple format
+        const simpleEntities = entities.map(e => ({
+            type: e.type,
+            offset: e.offset,
+            length: e.length,
+            url: e.url
+        }));
         
-        const formattedForWhatsApp = entitiesToWhatsApp(originalText, filteredEntities);
+        const formattedForWhatsApp = entitiesToWhatsApp(originalText, simpleEntities);
         
         const uniqueId = `${ctx.chat.id}_${Date.now()}_${Math.random().toString(36).substr(2, 6)}`;
         
@@ -498,7 +444,7 @@ function initTelegramBot() {
             type: 'text',
             content: formattedForWhatsApp,
             originalText: originalText,
-            entities: filteredEntities,
+            entities: simpleEntities,
             timestamp: Date.now()
         });
         
@@ -532,21 +478,14 @@ function initTelegramBot() {
             const response = await axios.get(fileLink, { responseType: 'arraybuffer' });
             const buffer = Buffer.from(response.data);
             
-            // Filter entities
-            const filteredEntities = [];
-            for (const entity of entities) {
-                const allowedTypes = ['bold', 'italic', 'underline', 'strikethrough', 'code', 'pre', 'text_link', 'spoiler'];
-                if (allowedTypes.includes(entity.type)) {
-                    filteredEntities.push({
-                        type: entity.type,
-                        offset: entity.offset,
-                        length: entity.length,
-                        url: entity.url
-                    });
-                }
-            }
+            const simpleEntities = entities.map(e => ({
+                type: e.type,
+                offset: e.offset,
+                length: e.length,
+                url: e.url
+            }));
             
-            const formattedCaption = entitiesToWhatsApp(caption, filteredEntities);
+            const formattedCaption = entitiesToWhatsApp(caption, simpleEntities);
             
             const uniqueId = `${ctx.chat.id}_${Date.now()}_${Math.random().toString(36).substr(2, 6)}`;
             
@@ -557,7 +496,7 @@ function initTelegramBot() {
                 size: buffer.length,
                 caption: formattedCaption,
                 originalCaption: caption,
-                captionEntities: filteredEntities,
+                captionEntities: simpleEntities,
                 timestamp: Date.now()
             });
             
@@ -595,21 +534,14 @@ function initTelegramBot() {
             const response = await axios.get(fileLink, { responseType: 'arraybuffer' });
             const buffer = Buffer.from(response.data);
             
-            // Filter entities
-            const filteredEntities = [];
-            for (const entity of entities) {
-                const allowedTypes = ['bold', 'italic', 'underline', 'strikethrough', 'code', 'pre', 'text_link', 'spoiler'];
-                if (allowedTypes.includes(entity.type)) {
-                    filteredEntities.push({
-                        type: entity.type,
-                        offset: entity.offset,
-                        length: entity.length,
-                        url: entity.url
-                    });
-                }
-            }
+            const simpleEntities = entities.map(e => ({
+                type: e.type,
+                offset: e.offset,
+                length: e.length,
+                url: e.url
+            }));
             
-            const formattedCaption = entitiesToWhatsApp(caption, filteredEntities);
+            const formattedCaption = entitiesToWhatsApp(caption, simpleEntities);
             
             const uniqueId = `${ctx.chat.id}_${Date.now()}_${Math.random().toString(36).substr(2, 6)}`;
             
@@ -620,7 +552,7 @@ function initTelegramBot() {
                 size: buffer.length,
                 caption: formattedCaption,
                 originalCaption: caption,
-                captionEntities: filteredEntities,
+                captionEntities: simpleEntities,
                 timestamp: Date.now()
             });
             
