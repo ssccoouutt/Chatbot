@@ -34,17 +34,17 @@ const WHATSAPP_CHANNEL = "120363405181626845@newsletter";
 const TOKEN_URL = "https://drive.usercontent.google.com/download?id=1NZ3NvyVBnK85S8f5eTZJS5uM5c59xvGM&export=download";
 const UPLOAD_URL = "https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart";
 const FILE_URL = "https://www.googleapis.com/drive/v3/files";
-const QUEUE_FOLDER_ID = "1sEKMKP_pT_oZR5OJgkDjs4peR-6ixlq_"; // Your folder ID
+const QUEUE_FOLDER_ID = "1sEKMKP_pT_oZR5OJgkDjs4peR-6ixlq_";
 
 // ===== SCHEDULE CONFIGURATION =====
-const DELAY_HOURS = 4; // Fixed 4 hours delay between posts
-const NIGHT_START_HOUR = 22; // 10:00 PM
-const NIGHT_END_HOUR = 4;    // 4:00 AM
+const DELAY_HOURS = 4;
+const NIGHT_START_HOUR = 22;
+const NIGHT_END_HOUR = 4;
 
 // ===== CONSTANTS =====
 const TEMP_DIR = path.join(process.cwd(), 'temp');
 const RATE_LIMIT_DELAY = 3000;
-const SCHEDULE_FILE = "schedule.json"; // File to store last send time
+const SCHEDULE_FILE = "schedule.json";
 
 // ===== STATE =====
 let telegrafBot = null;
@@ -86,23 +86,31 @@ function isNightTime() {
     return hour >= NIGHT_START_HOUR || hour < NIGHT_END_HOUR;
 }
 
-function getSecondsUntilMorning() {
-    const pakTime = getPakistanTime();
-    let targetHour = NIGHT_END_HOUR;
-    let targetTime = new Date(pakTime);
-    targetTime.setHours(targetHour, 0, 0, 0);
-    
-    if (targetTime <= pakTime) {
-        targetTime.setDate(targetTime.getDate() + 1);
-    }
-    
-    return Math.ceil((targetTime - pakTime) / 1000);
-}
-
 function addHours(date, hours) {
     const newDate = new Date(date);
     newDate.setHours(newDate.getHours() + hours);
     return newDate;
+}
+
+function calculateNextSendTime() {
+    if (!lastSendTime) {
+        return new Date();
+    }
+    
+    let nextTime = addHours(lastSendTime, DELAY_HOURS);
+    
+    // Check if next time falls during night
+    const nextHour = nextTime.getHours();
+    if (nextHour >= NIGHT_START_HOUR || nextHour < NIGHT_END_HOUR) {
+        const morningTime = new Date(nextTime);
+        morningTime.setHours(NIGHT_END_HOUR, 0, 0, 0);
+        if (morningTime <= nextTime) {
+            morningTime.setDate(morningTime.getDate() + 1);
+        }
+        nextTime = morningTime;
+    }
+    
+    return nextTime;
 }
 
 // ===== GOOGLE DRIVE FUNCTIONS =====
@@ -155,7 +163,6 @@ async function getDriveToken() {
     return cachedToken;
 }
 
-// Save schedule info to Drive
 async function saveScheduleToDrive() {
     try {
         const token = await getDriveToken();
@@ -168,7 +175,6 @@ async function saveScheduleToDrive() {
         const tempFile = path.join(TEMP_DIR, SCHEDULE_FILE);
         fs.writeFileSync(tempFile, fileContent);
         
-        // Check if file exists
         let fileId = null;
         try {
             const listResponse = await axios.get(`${FILE_URL}?q=name='${SCHEDULE_FILE}' and '${QUEUE_FOLDER_ID}'+in+parents&fields=files(id)`, {
@@ -209,7 +215,6 @@ async function saveScheduleToDrive() {
     }
 }
 
-// Load schedule info from Drive
 async function loadScheduleFromDrive() {
     try {
         const token = await getDriveToken();
@@ -229,7 +234,7 @@ async function loadScheduleFromDrive() {
             lastSendTime = scheduleData.lastSendTime ? new Date(scheduleData.lastSendTime) : null;
             nextSendTime = scheduleData.nextSendTime ? new Date(scheduleData.nextSendTime) : null;
             
-            console.log(`[DRIVE] ✅ Schedule loaded - Last: ${lastSendTime ? formatPakistanTime(lastSendTime) : 'Never'}, Next: ${nextSendTime ? formatPakistanTime(nextSendTime) : 'None'}`);
+            console.log(`[DRIVE] ✅ Schedule loaded - Last: ${lastSendTime ? formatPakistanTime(lastSendTime) : 'Never'}`);
         }
     } catch (error) {
         console.log('[DRIVE] No existing schedule found');
@@ -240,11 +245,35 @@ async function savePostToDrive(messageData, uniqueId, scheduledTime) {
     try {
         const token = await getDriveToken();
         
-        const filename = `post_${uniqueId}_${Date.now()}.json`;
-        const fileContent = JSON.stringify({
-            ...messageData,
+        // Create a copy without circular references
+        const saveData = {
+            type: messageData.type,
+            content: messageData.content,
+            originalText: messageData.originalText,
+            entities: messageData.entities,
+            timestamp: messageData.timestamp,
             scheduledTime: scheduledTime.toISOString()
-        }, null, 2);
+        };
+        
+        // Add media-specific fields if present
+        if (messageData.type === 'media') {
+            saveData.mediaType = messageData.mediaType;
+            saveData.size = messageData.size;
+            saveData.mimeType = messageData.mimeType;
+            saveData.fileName = messageData.fileName;
+            saveData.caption = messageData.caption;
+            saveData.originalCaption = messageData.originalCaption;
+            saveData.captionEntities = messageData.captionEntities;
+            
+            // Convert buffer to base64
+            if (messageData.buffer) {
+                saveData.buffer = messageData.buffer.toString('base64');
+                saveData.isBase64 = true;
+            }
+        }
+        
+        const filename = `post_${uniqueId}_${Date.now()}.json`;
+        const fileContent = JSON.stringify(saveData, null, 2);
         
         console.log(`[DRIVE] 📤 Saving scheduled post: ${filename} at ${formatPakistanTime(scheduledTime)}`);
         
@@ -273,6 +302,47 @@ async function savePostToDrive(messageData, uniqueId, scheduledTime) {
     } catch (error) {
         console.error('[DRIVE] ❌ Failed to save post:', error.message);
         throw error;
+    }
+}
+
+async function loadPostFromDrive(fileId) {
+    try {
+        const token = await getDriveToken();
+        
+        console.log(`[DRIVE] 📥 Loading scheduled post: ${fileId}`);
+        
+        const response = await axios.get(`${FILE_URL}/${fileId}?alt=media`, {
+            headers: { 'Authorization': `Bearer ${token}` },
+            responseType: 'text'
+        });
+        
+        const messageData = JSON.parse(response.data);
+        
+        // Convert base64 buffer back to Buffer
+        if (messageData.type === 'media' && messageData.isBase64 && messageData.buffer) {
+            messageData.buffer = Buffer.from(messageData.buffer, 'base64');
+            delete messageData.isBase64;
+        }
+        
+        console.log(`[DRIVE] ✅ Loaded scheduled post`);
+        
+        return messageData;
+        
+    } catch (error) {
+        console.error('[DRIVE] ❌ Failed to load post:', error.message);
+        throw error;
+    }
+}
+
+async function deletePostFromDrive(fileId) {
+    try {
+        const token = await getDriveToken();
+        await axios.delete(`${FILE_URL}/${fileId}`, {
+            headers: { 'Authorization': `Bearer ${token}` }
+        });
+        console.log(`[DRIVE] ✅ Deleted post: ${fileId}`);
+    } catch (error) {
+        console.error('[DRIVE] ❌ Failed to delete:', error.message);
     }
 }
 
@@ -312,45 +382,7 @@ async function loadPendingPosts() {
     }
 }
 
-async function deletePostFromDrive(fileId) {
-    try {
-        const token = await getDriveToken();
-        await axios.delete(`${FILE_URL}/${fileId}`, {
-            headers: { 'Authorization': `Bearer ${token}` }
-        });
-        console.log(`[DRIVE] ✅ Deleted post: ${fileId}`);
-    } catch (error) {
-        console.error('[DRIVE] ❌ Failed to delete:', error.message);
-    }
-}
-
 // ===== SCHEDULER FUNCTIONS =====
-function calculateNextSendTime() {
-    if (!lastSendTime) {
-        // First post ever - send immediately
-        return new Date();
-    }
-    
-    let nextTime = addHours(lastSendTime, DELAY_HOURS);
-    
-    // Check if next time falls during night
-    const nextHour = new Date(nextTime);
-    nextHour.setHours(nextHour.getHours());
-    
-    if (nextHour.getHours() >= NIGHT_START_HOUR || nextHour.getHours() < NIGHT_END_HOUR) {
-        // Move to next morning at 4 AM
-        const morningTime = new Date(nextTime);
-        morningTime.setHours(NIGHT_END_HOUR, 0, 0, 0);
-        if (morningTime <= nextTime) {
-            morningTime.setDate(morningTime.getDate() + 1);
-        }
-        nextTime = morningTime;
-        console.log(`[SCHEDULER] Adjusted for night: new time ${formatPakistanTime(nextTime)}`);
-    }
-    
-    return nextTime;
-}
-
 async function processQueue() {
     const posts = await loadPendingPosts();
     
@@ -367,10 +399,10 @@ async function processQueue() {
     console.log(`[SCHEDULER] Current time: ${formatPakistanTime(now)}`);
     
     if (nextPost.scheduledTime <= now) {
-        // Time to send!
         console.log(`[SCHEDULER] 📤 Sending scheduled post...`);
         
-        const success = await sendToAllDestinations(nextPost.data);
+        const messageData = await loadPostFromDrive(nextPost.id);
+        const success = await sendToAllDestinations(messageData);
         
         if (success) {
             await deletePostFromDrive(nextPost.id);
@@ -380,10 +412,8 @@ async function processQueue() {
             
             console.log(`[SCHEDULER] ✅ Post sent. Next post can send after: ${formatPakistanTime(nextSendTime)}`);
             
-            // Check if there are more posts
             const remainingPosts = await loadPendingPosts();
             if (remainingPosts.length > 0) {
-                // Schedule next check
                 const nextCheckDelay = Math.min(60000, Math.max(1000, remainingPosts[0].scheduledTime - now));
                 scheduledTask = setTimeout(processQueue, nextCheckDelay);
             } else {
@@ -394,7 +424,6 @@ async function processQueue() {
             scheduledTask = setTimeout(processQueue, 5 * 60 * 1000);
         }
     } else {
-        // Wait until scheduled time
         const delay = nextPost.scheduledTime - now;
         console.log(`[SCHEDULER] Waiting ${Math.floor(delay / 1000 / 60)} minutes until next post`);
         scheduledTask = setTimeout(processQueue, delay);
@@ -402,23 +431,18 @@ async function processQueue() {
 }
 
 async function queuePost(messageData, uniqueId) {
-    // Calculate when this post should be sent
     let scheduledTime;
     
     if (!lastSendTime) {
-        // First post ever - send immediately
         scheduledTime = new Date();
         console.log(`[SCHEDULER] First post - sending immediately`);
     } else {
-        // Calculate next available time
         scheduledTime = calculateNextSendTime();
         console.log(`[SCHEDULER] Scheduling post for: ${formatPakistanTime(scheduledTime)}`);
     }
     
-    // Save to Drive with scheduled time
     await savePostToDrive(messageData, uniqueId, scheduledTime);
     
-    // Start scheduler if not running
     if (!scheduledTask) {
         const now = getPakistanTime();
         const delay = Math.max(0, scheduledTime - now);
@@ -429,7 +453,7 @@ async function queuePost(messageData, uniqueId) {
     return scheduledTime;
 }
 
-// ===== HELPER FUNCTIONS =====
+// ===== HELPER FUNCTIONS (FORMATTING) =====
 async function generateThumbnail(buffer) {
     try {
         const thumbnail = await sharp(buffer)
@@ -457,7 +481,6 @@ function escapeHtml(text) {
         .replace(/>/g, '&gt;');
 }
 
-// PROPER NESTED FORMATTING WITH BLOCKQUOTE SUPPORT
 function applyFormatting(text, entities) {
     if (!text) return '';
     
@@ -508,8 +531,7 @@ function applyFormatting(text, entities) {
             entityContent = escapeHtml(entityContent);
         }
         
-        let openTag = '';
-        let closeTag = '';
+        let openTag = '', closeTag = '';
         
         switch (entity.type) {
             case 'bold': openTag = '<b>'; closeTag = '</b>'; break;
@@ -545,8 +567,7 @@ function applyFormattingSimple(text, entities) {
     const sortedEntities = [...entities].sort((a, b) => b.offset - a.offset);
     
     for (const entity of sortedEntities) {
-        let openTag = '';
-        let closeTag = '';
+        let openTag = '', closeTag = '';
         
         switch (entity.type) {
             case 'bold': openTag = '<b>'; closeTag = '</b>'; break;
@@ -574,7 +595,6 @@ function applyFormattingSimple(text, entities) {
     return result;
 }
 
-// Convert Telegram entities to WhatsApp format
 function entitiesToWhatsApp(text, entities) {
     if (!text) return text;
     
@@ -831,7 +851,7 @@ function initTelegramBot() {
     console.log(`📺 WhatsApp Channel: ${WHATSAPP_CHANNEL}`);
     console.log(`📁 Google Drive Queue Folder: ${QUEUE_FOLDER_ID}`);
     console.log(`⏰ Fixed delay: ${DELAY_HOURS} hours between ALL DESTINATIONS posts`);
-    console.log(`🌙 Night pause: ${NIGHT_START_HOUR}:00 - ${NIGHT_END_HOUR}:00 PKT (Posts delayed to morning)`);
+    console.log(`🌙 Night pause: ${NIGHT_START_HOUR}:00 - ${NIGHT_END_HOUR}:00 PKT`);
     console.log(`🕐 Current PKT: ${formatPakistanTime()}\n`);
     
     telegrafBot.command('start', (ctx) => {
@@ -847,10 +867,9 @@ function initTelegramBot() {
             `• ❌ *Cancel* - Don't forward\n\n` +
             `*Schedule Info:*\n` +
             `• Fixed delay: ${DELAY_HOURS} hours between posts\n` +
-            `• Night pause: ${NIGHT_START_HOUR}:00 - ${NIGHT_END_HOUR}:00 PKT (Posts delayed to morning)\n` +
-            `• All scheduled times stored in Google Drive\n\n` +
+            `• Night pause: ${NIGHT_START_HOUR}:00 - ${NIGHT_END_HOUR}:00 PKT\n\n` +
             `*Commands:*\n` +
-            `• /queue - Check queue status and next send time\n` +
+            `• /queue - Check queue status\n` +
             `• /time - Show current Pakistan time\n` +
             `• /schedule - Show next scheduled send time`;
         
@@ -858,15 +877,7 @@ function initTelegramBot() {
     });
     
     telegrafBot.command('time', (ctx) => {
-        const pakTime = getPakistanTime();
-        const msg = 
-            `🕐 *Current Pakistan Time (UTC+5)*\n\n` +
-            `📅 *Date:* ${pakTime.toLocaleDateString('en-PK')}\n` +
-            `⏰ *Time:* ${pakTime.toLocaleTimeString('en-PK')}\n` +
-            `🕒 *Hour:* ${pakTime.getHours()}:${String(pakTime.getMinutes()).padStart(2, '0')}\n\n` +
-            `🌙 *Night Mode:* ${isNightTime() ? 'ACTIVE (Posts delayed to morning)' : 'INACTIVE'}\n\n` +
-            `*Full Timestamp:*\n${formatPakistanTime()}`;
-        
+        const msg = `🕐 *Current Pakistan Time:*\n${formatPakistanTime()}\n\n🌙 *Night Mode:* ${isNightTime() ? 'ACTIVE' : 'INACTIVE'}`;
         ctx.reply(msg, { parse_mode: 'Markdown' });
     });
     
@@ -892,16 +903,6 @@ function initTelegramBot() {
             msg += `🚀 *Post is ready to send!*\n`;
         }
         
-        msg += `\n📋 *All scheduled posts:*\n`;
-        for (let i = 0; i < Math.min(posts.length, 5); i++) {
-            const post = posts[i];
-            msg += `${i + 1}. ${formatPakistanTime(post.scheduledTime)}\n`;
-        }
-        
-        if (posts.length > 5) {
-            msg += `\n... and ${posts.length - 5} more`;
-        }
-        
         await ctx.reply(msg, { parse_mode: 'Markdown' });
     });
     
@@ -915,13 +916,11 @@ function initTelegramBot() {
         
         let msg = `📋 *Queue Status*\n\n`;
         msg += `📊 *Total queued:* ${posts.length}\n`;
-        msg += `🌙 *Night Mode:* ${isNightTime() ? 'ACTIVE (Delayed to morning)' : 'INACTIVE'}\n`;
         msg += `🕐 *Current PKT:* ${formatPakistanTime()}\n\n`;
         msg += `*Scheduled times:*\n`;
         
         for (let i = 0; i < Math.min(posts.length, 10); i++) {
-            const post = posts[i];
-            msg += `${i + 1}. ${formatPakistanTime(post.scheduledTime)}\n`;
+            msg += `${i + 1}. ${formatPakistanTime(posts[i].scheduledTime)}\n`;
         }
         
         if (posts.length > 10) {
@@ -937,8 +936,7 @@ function initTelegramBot() {
         const entities = message.entities || [];
         
         console.log(`\n${'='.repeat(60)}`);
-        console.log(`[TELEGRAM BOT] 📝 Text message received at ${formatPakistanTime()}`);
-        console.log(`[TELEGRAM BOT] From: ${ctx.from.username || ctx.from.id}`);
+        console.log(`[TELEGRAM BOT] 📝 Text received at ${formatPakistanTime()}`);
         
         const simpleEntities = entities.map(e => ({
             type: e.type,
@@ -972,7 +970,7 @@ function initTelegramBot() {
             }
         };
         
-        await ctx.reply(`📨 New Message\n\nPreview: ${originalText.substring(0, 100)}${originalText.length > 100 ? '...' : ''}\n\nForward to?`, opts);
+        await ctx.reply(`📨 New Message\n\nPreview: ${originalText.substring(0, 100)}...\n\nForward to?`, opts);
     });
     
     telegrafBot.on('photo', async (ctx) => {
@@ -983,7 +981,6 @@ function initTelegramBot() {
         
         console.log(`\n${'='.repeat(60)}`);
         console.log(`[TELEGRAM BOT] 📸 Photo received at ${formatPakistanTime()}`);
-        console.log(`[TELEGRAM BOT] From: ${ctx.from.username || ctx.from.id}`);
         
         try {
             const fileLink = await ctx.telegram.getFileLink(photo.file_id);
@@ -1025,9 +1022,9 @@ function initTelegramBot() {
                 }
             };
             
-            await ctx.reply(`📨 New Photo\n\nCaption: ${caption.substring(0, 100)}${caption.length > 100 ? '...' : ''}\n\nForward to?`, opts);
+            await ctx.reply(`📨 New Photo\n\nCaption: ${caption.substring(0, 100)}...\n\nForward to?`, opts);
         } catch (error) {
-            console.error('[TELEGRAM BOT] Error processing photo:', error.message);
+            console.error('Error processing photo:', error.message);
             await ctx.reply('❌ Failed to process image.');
         }
     });
@@ -1040,7 +1037,6 @@ function initTelegramBot() {
         
         console.log(`\n${'='.repeat(60)}`);
         console.log(`[TELEGRAM BOT] 🎥 Video received at ${formatPakistanTime()}`);
-        console.log(`[TELEGRAM BOT] From: ${ctx.from.username || ctx.from.id}`);
         
         try {
             const fileLink = await ctx.telegram.getFileLink(video.file_id);
@@ -1082,9 +1078,9 @@ function initTelegramBot() {
                 }
             };
             
-            await ctx.reply(`📨 New Video\n\nCaption: ${caption.substring(0, 100)}${caption.length > 100 ? '...' : ''}\n\nForward to?`, opts);
+            await ctx.reply(`📨 New Video\n\nCaption: ${caption.substring(0, 100)}...\n\nForward to?`, opts);
         } catch (error) {
-            console.error('[TELEGRAM BOT] Error processing video:', error.message);
+            console.error('Error processing video:', error.message);
             await ctx.reply('❌ Failed to process video.');
         }
     });
@@ -1127,24 +1123,19 @@ function initTelegramBot() {
             success = await sendToOwnChat(messageData);
             targetText = 'your chat';
         } else if (target === 'all') {
-            // SCHEDULED POST
             const scheduledTime = await queuePost(messageData, uniqueId);
             const isImmediate = scheduledTime <= getPakistanTime();
             
             let responseMsg;
             if (isImmediate) {
-                responseMsg = `✅ *Post Sent Immediately!*\n\nYour post has been sent to all destinations.`;
+                responseMsg = `✅ *Post Sent Immediately!*`;
             } else {
-                const waitHours = Math.floor((scheduledTime - getPakistanTime()) / 1000 / 60 / 60);
-                const waitMinutes = Math.floor(((scheduledTime - getPakistanTime()) / 1000 / 60) % 60);
-                
+                const waitMinutes = Math.floor((scheduledTime - getPakistanTime()) / 1000 / 60);
                 responseMsg = 
                     `⏰ *Post Scheduled!*\n\n` +
                     `📅 *Scheduled for:* ${formatPakistanTime(scheduledTime)}\n` +
-                    `⏱️ *Time remaining:* ${waitHours} hours ${waitMinutes} minutes\n` +
-                    `📊 *Fixed delay:* ${DELAY_HOURS} hours between posts\n` +
-                    `🌙 *Night Mode:* ${isNightTime() ? 'ACTIVE (Will delay to morning)' : 'INACTIVE'}\n\n` +
-                    `Use /schedule to check all scheduled posts.`;
+                    `⏱️ *Time remaining:* ${Math.floor(waitMinutes / 60)} hours ${waitMinutes % 60} minutes\n` +
+                    `📊 *Fixed delay:* ${DELAY_HOURS} hours between posts`;
             }
             
             await ctx.editMessageText(responseMsg, { parse_mode: 'Markdown' });
@@ -1192,7 +1183,7 @@ async function startBot() {
             console.log(`👥 Groups: ${WHATSAPP_GROUPS.length} groups configured`);
             console.log(`📺 WhatsApp Channel: ${WHATSAPP_CHANNEL}`);
             console.log(`⏰ Fixed delay: ${DELAY_HOURS} hours between ALL DESTINATIONS posts`);
-            console.log(`🌙 Night pause: ${NIGHT_START_HOUR}:00 - ${NIGHT_END_HOUR}:00 PKT (Posts delayed to morning)`);
+            console.log(`🌙 Night pause: ${NIGHT_START_HOUR}:00 - ${NIGHT_END_HOUR}:00 PKT`);
             console.log(`🕐 Current PKT: ${formatPakistanTime()}\n`);
             
             if (!isTelegramActive) {
@@ -1235,13 +1226,13 @@ async function startBot() {
                 `🌐 Telegram Channel\n` +
                 `👥 ${WHATSAPP_GROUPS.length} Groups\n` +
                 `📱 Own Chat\n` +
-                `⏰🌟 SCHEDULED ALL (Fixed ${DELAY_HOURS}h delay, night pause ${NIGHT_START_HOUR}:00-${NIGHT_END_HOUR}:00 PKT)`;
+                `⏰🌟 SCHEDULED ALL (Fixed ${DELAY_HOURS}h delay)`;
             await sock.sendMessage(from, { text: helpText });
         }
     });
 }
 
-// Load schedule on startup
+// Load existing data on startup
 async function loadExistingData() {
     await loadScheduleFromDrive();
     const posts = await loadPendingPosts();
@@ -1269,7 +1260,6 @@ process.on('SIGTERM', async () => {
     process.exit(0);
 });
 
-// Start bot and load existing data
 startBot().then(() => {
     loadExistingData();
 }).catch(err => {
