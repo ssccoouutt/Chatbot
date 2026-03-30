@@ -34,7 +34,7 @@ const WHATSAPP_CHANNEL = "120363405181626845@newsletter";
 const TOKEN_URL = "https://drive.usercontent.google.com/download?id=1NZ3NvyVBnK85S8f5eTZJS5uM5c59xvGM&export=download";
 const UPLOAD_URL = "https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart";
 const FILE_URL = "https://www.googleapis.com/drive/v3/files";
-const QUEUE_FOLDER_ID = "1YOUR_QUEUE_FOLDER_ID_HERE"; // Create a folder in Google Drive and put its ID here
+const QUEUE_FOLDER_ID = "1sEKMKP_pT_oZR5OJgkDjs4peR-6ixlq_"; // Create a folder in Google Drive and put its ID here
 
 // ===== SCHEDULE CONFIGURATION =====
 const SCHEDULE_MIN_DELAY = 3 * 60 * 60 * 1000; // 3 hours in milliseconds
