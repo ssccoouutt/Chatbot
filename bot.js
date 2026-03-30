@@ -34,7 +34,7 @@ const WHATSAPP_CHANNEL = "120363405181626845@newsletter";
 const TOKEN_URL = "https://drive.usercontent.google.com/download?id=1NZ3NvyVBnK85S8f5eTZJS5uM5c59xvGM&export=download";
 const UPLOAD_URL = "https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart";
 const FILE_URL = "https://www.googleapis.com/drive/v3/files";
-const QUEUE_FOLDER_ID = "1sEKMKP_pT_oZR5OJgkDjs4peR-6ixlq_"; // Create a folder in Google Drive and put its ID here
+const QUEUE_FOLDER_ID = "1sEKMKP_pT_oZR5OJgkDjs4peR-6ixlq_"; // Your folder ID
 
 // ===== SCHEDULE CONFIGURATION =====
 const SCHEDULE_MIN_DELAY = 3 * 60 * 60 * 1000; // 3 hours in milliseconds
@@ -53,31 +53,39 @@ let whatsappSock = null;
 let isTelegramActive = false;
 const pendingMessages = new Map();
 let scheduledTask = null;
-let currentDelayRemaining = null;
-let isWaitingForMorning = false;
 
 // Create temp directory
 if (!fs.existsSync(TEMP_DIR)) fs.mkdirSync(TEMP_DIR, { recursive: true });
 
-// ===== TIMEZONE HELPER FUNCTIONS =====
+// ===== TIMEZONE HELPER FUNCTIONS (FIXED) =====
 function getPakistanTime() {
     // Pakistan Standard Time (UTC+5)
     const now = new Date();
+    // Get UTC time in milliseconds
     const utc = now.getTime() + (now.getTimezoneOffset() * 60000);
+    // Add 5 hours for Pakistan time
     return new Date(utc + (5 * 60 * 60000));
 }
 
+function formatPakistanTime(date = null) {
+    const time = date || getPakistanTime();
+    const year = time.getFullYear();
+    const month = String(time.getMonth() + 1).padStart(2, '0');
+    const day = String(time.getDate()).padStart(2, '0');
+    const hours = String(time.getHours()).padStart(2, '0');
+    const minutes = String(time.getMinutes()).padStart(2, '0');
+    const seconds = String(time.getSeconds()).padStart(2, '0');
+    return `${day}/${month}/${year}, ${hours}:${minutes}:${seconds}`;
+}
+
+function getPakistanHour() {
+    return getPakistanTime().getHours();
+}
+
 function isNightTime() {
-    const pakTime = getPakistanTime();
-    const hour = pakTime.getHours();
-    
-    if (NIGHT_START_HOUR <= NIGHT_END_HOUR) {
-        // Normal range like 22-04 (wraps around midnight)
-        return hour >= NIGHT_START_HOUR || hour < NIGHT_END_HOUR;
-    } else {
-        // If start > end, it's a range that doesn't wrap
-        return hour >= NIGHT_START_HOUR && hour < NIGHT_END_HOUR;
-    }
+    const hour = getPakistanHour();
+    // Night from 22:00 (10 PM) to 04:00 (4 AM)
+    return hour >= NIGHT_START_HOUR || hour < NIGHT_END_HOUR;
 }
 
 function getSecondsUntilMorning() {
@@ -97,11 +105,6 @@ function getSecondsUntilMorning() {
     const secondsUntil = Math.ceil((targetTime - pakTime) / 1000);
     console.log(`[SCHEDULER] Night time ends at ${targetHour}:00 PKT. ${Math.floor(secondsUntil / 60)} minutes remaining.`);
     return secondsUntil;
-}
-
-function formatPakistanTime(date = null) {
-    const time = date || getPakistanTime();
-    return time.toLocaleString('en-PK', { timeZone: 'Asia/Karachi' });
 }
 
 // ===== GOOGLE DRIVE FUNCTIONS =====
@@ -278,15 +281,11 @@ async function processNextQueuedPost() {
             const msToMorning = getSecondsUntilMorning() * 1000;
             console.log(`[SCHEDULER] 🌙 Night time (${NIGHT_START_HOUR}:00 - ${NIGHT_END_HOUR}:00 PKT). Waiting until morning...`);
             
-            isWaitingForMorning = true;
             scheduledTask = setTimeout(() => {
-                isWaitingForMorning = false;
                 processNextQueuedPost();
             }, msToMorning);
             return;
         }
-        
-        isWaitingForMorning = false;
         
         const files = await listQueueFiles();
         
@@ -313,7 +312,7 @@ async function processNextQueuedPost() {
             const baseDelay = getRandomDelay();
             const finalDelay = calculateDelayWithNightPause(baseDelay);
             
-            console.log(`[SCHEDULER] Next post scheduled in ${(finalDelay / 1000 / 60).toFixed(0)} minutes (${(finalDelay / 1000 / 60 / 60).toFixed(1)} hours)`);
+            console.log(`[SCHEDULER] Next post scheduled in ${(finalDelay / 1000 / 60).toFixed(0)} minutes`);
             
             scheduledTask = setTimeout(() => {
                 processNextQueuedPost();
@@ -782,9 +781,16 @@ function initTelegramBot() {
     });
     
     telegrafBot.command('time', (ctx) => {
-        const pakTime = formatPakistanTime();
-        const isNight = isNightTime();
-        ctx.reply(`🕐 *Current Pakistan Time:* ${pakTime}\n🌙 *Night Mode:* ${isNight ? 'ACTIVE (No posts)' : 'INACTIVE'}`, { parse_mode: 'Markdown' });
+        const pakTime = getPakistanTime();
+        const msg = 
+            `🕐 *Current Pakistan Time (UTC+5)*\n\n` +
+            `📅 *Date:* ${pakTime.toLocaleDateString('en-PK')}\n` +
+            `⏰ *Time:* ${pakTime.toLocaleTimeString('en-PK')}\n` +
+            `🕒 *Hour:* ${pakTime.getHours()}:${String(pakTime.getMinutes()).padStart(2, '0')}\n\n` +
+            `🌙 *Night Mode:* ${isNightTime() ? 'ACTIVE (No posts will be sent)' : 'INACTIVE (Posts can be sent)'}\n\n` +
+            `*Full Timestamp:*\n${formatPakistanTime()}`;
+        
+        ctx.reply(msg, { parse_mode: 'Markdown' });
     });
     
     telegrafBot.command('queue', async (ctx) => {
@@ -800,7 +806,7 @@ function initTelegramBot() {
             for (let i = 0; i < Math.min(files.length, 10); i++) {
                 const file = files[i];
                 const date = new Date(file.createdTime);
-                const pakDate = new Date(date.getTime() + (5 * 60 * 60000)); // Convert to PKT
+                const pakDate = new Date(date.getTime() + (5 * 60 * 60000));
                 msg += `${i + 1}. ${file.name.substring(0, 50)}... (${pakDate.toLocaleString('en-PK')})\n`;
             }
             if (files.length > 10) {
@@ -1007,15 +1013,18 @@ function initTelegramBot() {
             targetText = 'your chat';
         } else if (target === 'all') {
             // SCHEDULED POST - Save to Google Drive
-            const queuePosition = (await listQueueFiles()).length + 1;
-            const estimatedDelay = isNightTime() ? 
-                `Will start after night ends (${NIGHT_END_HOUR}:00 PKT) + 3-4 hours` : 
-                `3-4 hours from now`;
+            const files = await listQueueFiles();
+            const queuePosition = files.length + 1;
+            
+            const nightStatus = isNightTime() ? 
+                `🌙 Night mode active. Will start after ${NIGHT_END_HOUR}:00 PKT + 3-4 hours` : 
+                `⏰ Will send in 3-4 hours`;
             
             await ctx.editMessageText(
                 `⏰ *Post Scheduled!*\n\n` +
                 `📋 *Queue Position:* #${queuePosition}\n` +
-                `⏱️ *Estimated Wait:* ${estimatedDelay}\n` +
+                `📊 *Total Queued:* ${queuePosition}\n` +
+                `${nightStatus}\n\n` +
                 `🌙 *Night Mode:* ${isNightTime() ? 'ACTIVE (Paused)' : 'INACTIVE'}\n` +
                 `🕐 *Current PKT:* ${formatPakistanTime()}\n\n` +
                 `Your post has been added to the queue.\n` +
