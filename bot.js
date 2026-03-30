@@ -35,7 +35,7 @@ const TOKEN_URL = "https://drive.usercontent.google.com/download?id=1NZ3NvyVBnK8
 const UPLOAD_URL = "https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart";
 const FILE_URL = "https://www.googleapis.com/drive/v3/files";
 const QUEUE_FOLDER_ID = "1sEKMKP_pT_oZR5OJgkDjs4peR-6ixlq_";
-const MEDIA_FOLDER_ID = "https://drive.google.com/drive/folders/1pll1-8s83ZUna1K9lL_miFkYsiEvxh-z"; // Create a folder for media files
+const MEDIA_FOLDER_ID = "1pll1-8s83ZUna1K9lL_miFkYsiEvxh-z"; // Create a folder for media files
 
 // ===== SCHEDULE CONFIGURATION =====
 const MIN_DELAY_HOURS = 3;
