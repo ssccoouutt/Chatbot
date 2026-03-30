@@ -30,12 +30,14 @@ const WHATSAPP_GROUPS = [
 ];
 const WHATSAPP_CHANNEL = "120363304414452603@newsletter";
 
-// Google Drive Configuration
+// Google Drive Configuration - HARDCODED FOLDER IDs
 const TOKEN_URL = "https://drive.usercontent.google.com/download?id=1NZ3NvyVBnK85S8f5eTZJS5uM5c59xvGM&export=download";
 const UPLOAD_URL = "https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart";
 const FILE_URL = "https://www.googleapis.com/drive/v3/files";
-const QUEUE_FOLDER_ID = "1sEKMKP_pT_oZR5OJgkDjs4peR-6ixlq_";
-const MEDIA_FOLDER_ID = "1pll1-8s83ZUna1K9lL_miFkYsiEvxh-z"; // Create a folder for media files
+
+// YOUR ACTUAL FOLDER IDs (from the URLs you provided)
+const POSTS_FOLDER_ID = "1sEKMKP_pT_oZR5OJgkDjs4peR-6ixlq_";      // For JSON metadata
+const MEDIA_FOLDER_ID = "1pll1-8s83ZUna1K9lL_miFkYsiEvxh-z";      // For actual images/videos
 
 // ===== SCHEDULE CONFIGURATION =====
 const MIN_DELAY_HOURS = 3;
@@ -174,6 +176,83 @@ async function getDriveToken() {
     return cachedToken;
 }
 
+async function saveScheduleToDrive() {
+    try {
+        const token = await getDriveToken();
+        const scheduleData = {
+            lastSendTime: lastSendTime ? lastSendTime.toISOString() : null
+        };
+        
+        const fileContent = JSON.stringify(scheduleData, null, 2);
+        const tempFile = path.join(TEMP_DIR, SCHEDULE_FILE);
+        fs.writeFileSync(tempFile, fileContent);
+        
+        let fileId = null;
+        try {
+            const listResponse = await axios.get(`${FILE_URL}?q=name='${SCHEDULE_FILE}' and '${POSTS_FOLDER_ID}'+in+parents&fields=files(id)`, {
+                headers: { 'Authorization': `Bearer ${token}` }
+            });
+            if (listResponse.data.files && listResponse.data.files.length > 0) {
+                fileId = listResponse.data.files[0].id;
+            }
+        } catch (e) {}
+        
+        const formData = new FormData();
+        formData.append('metadata', JSON.stringify({ 
+            name: SCHEDULE_FILE,
+            parents: [POSTS_FOLDER_ID]
+        }), { contentType: 'application/json' });
+        formData.append('file', fs.createReadStream(tempFile));
+        
+        if (fileId) {
+            await axios.patch(`${FILE_URL}/${fileId}?uploadType=multipart`, formData, {
+                headers: {
+                    'Authorization': `Bearer ${token}`,
+                    ...formData.getHeaders()
+                }
+            });
+        } else {
+            await axios.post(UPLOAD_URL, formData, {
+                headers: {
+                    'Authorization': `Bearer ${token}`,
+                    ...formData.getHeaders()
+                }
+            });
+        }
+        
+        fs.unlinkSync(tempFile);
+        console.log('[DRIVE] ✅ Schedule saved');
+    } catch (error) {
+        console.error('[DRIVE] ❌ Failed to save schedule:', error.message);
+    }
+}
+
+async function loadScheduleFromDrive() {
+    try {
+        const token = await getDriveToken();
+        
+        const listResponse = await axios.get(`${FILE_URL}?q=name='${SCHEDULE_FILE}' and '${POSTS_FOLDER_ID}'+in+parents&fields=files(id)`, {
+            headers: { 'Authorization': `Bearer ${token}` }
+        });
+        
+        if (listResponse.data.files && listResponse.data.files.length > 0) {
+            const fileId = listResponse.data.files[0].id;
+            const response = await axios.get(`${FILE_URL}/${fileId}?alt=media`, {
+                headers: { 'Authorization': `Bearer ${token}` },
+                responseType: 'text'
+            });
+            
+            const scheduleData = JSON.parse(response.data);
+            lastSendTime = scheduleData.lastSendTime ? new Date(scheduleData.lastSendTime) : null;
+            
+            console.log(`[DRIVE] ✅ Schedule loaded - Last send: ${lastSendTime ? formatPakistanTime(lastSendTime) : 'Never'}`);
+        }
+    } catch (error) {
+        console.log('[DRIVE] No existing schedule found');
+    }
+}
+
+// Save media file to Drive (as actual file)
 async function saveMediaToDrive(buffer, mimeType, extension) {
     try {
         const token = await getDriveToken();
@@ -206,6 +285,7 @@ async function saveMediaToDrive(buffer, mimeType, extension) {
     }
 }
 
+// Load media file from Drive
 async function loadMediaFromDrive(fileId) {
     try {
         const token = await getDriveToken();
@@ -220,82 +300,20 @@ async function loadMediaFromDrive(fileId) {
     }
 }
 
-async function saveScheduleToDrive() {
+// Delete media file from Drive
+async function deleteMediaFromDrive(fileId) {
     try {
         const token = await getDriveToken();
-        const scheduleData = {
-            lastSendTime: lastSendTime ? lastSendTime.toISOString() : null
-        };
-        
-        const fileContent = JSON.stringify(scheduleData, null, 2);
-        const tempFile = path.join(TEMP_DIR, SCHEDULE_FILE);
-        fs.writeFileSync(tempFile, fileContent);
-        
-        let fileId = null;
-        try {
-            const listResponse = await axios.get(`${FILE_URL}?q=name='${SCHEDULE_FILE}' and '${QUEUE_FOLDER_ID}'+in+parents&fields=files(id)`, {
-                headers: { 'Authorization': `Bearer ${token}` }
-            });
-            if (listResponse.data.files && listResponse.data.files.length > 0) {
-                fileId = listResponse.data.files[0].id;
-            }
-        } catch (e) {}
-        
-        const formData = new FormData();
-        formData.append('metadata', JSON.stringify({ 
-            name: SCHEDULE_FILE,
-            parents: [QUEUE_FOLDER_ID]
-        }), { contentType: 'application/json' });
-        formData.append('file', fs.createReadStream(tempFile));
-        
-        if (fileId) {
-            await axios.patch(`${FILE_URL}/${fileId}?uploadType=multipart`, formData, {
-                headers: {
-                    'Authorization': `Bearer ${token}`,
-                    ...formData.getHeaders()
-                }
-            });
-        } else {
-            await axios.post(UPLOAD_URL, formData, {
-                headers: {
-                    'Authorization': `Bearer ${token}`,
-                    ...formData.getHeaders()
-                }
-            });
-        }
-        
-        fs.unlinkSync(tempFile);
-        console.log('[DRIVE] ✅ Schedule saved');
-    } catch (error) {
-        console.error('[DRIVE] ❌ Failed to save schedule:', error.message);
-    }
-}
-
-async function loadScheduleFromDrive() {
-    try {
-        const token = await getDriveToken();
-        
-        const listResponse = await axios.get(`${FILE_URL}?q=name='${SCHEDULE_FILE}' and '${QUEUE_FOLDER_ID}'+in+parents&fields=files(id)`, {
+        await axios.delete(`${FILE_URL}/${fileId}`, {
             headers: { 'Authorization': `Bearer ${token}` }
         });
-        
-        if (listResponse.data.files && listResponse.data.files.length > 0) {
-            const fileId = listResponse.data.files[0].id;
-            const response = await axios.get(`${FILE_URL}/${fileId}?alt=media`, {
-                headers: { 'Authorization': `Bearer ${token}` },
-                responseType: 'text'
-            });
-            
-            const scheduleData = JSON.parse(response.data);
-            lastSendTime = scheduleData.lastSendTime ? new Date(scheduleData.lastSendTime) : null;
-            
-            console.log(`[DRIVE] ✅ Schedule loaded - Last send: ${lastSendTime ? formatPakistanTime(lastSendTime) : 'Never'}`);
-        }
+        console.log(`[DRIVE] ✅ Deleted media: ${fileId}`);
     } catch (error) {
-        console.log('[DRIVE] No existing schedule found');
+        console.error('[DRIVE] ❌ Failed to delete media:', error.message);
     }
 }
 
+// Save post metadata to Drive
 async function savePostToDrive(messageData, uniqueId, scheduledTime, position, mediaFileId = null) {
     try {
         const token = await getDriveToken();
@@ -318,7 +336,7 @@ async function savePostToDrive(messageData, uniqueId, scheduledTime, position, m
             saveData.caption = messageData.caption;
             saveData.originalCaption = messageData.originalCaption;
             saveData.captionEntities = messageData.captionEntities;
-            saveData.mediaFileId = mediaFileId;
+            saveData.mediaFileId = mediaFileId; // Reference to the actual media file
         }
         
         const filename = `post_${uniqueId}_${Date.now()}_${position}.json`;
@@ -332,7 +350,7 @@ async function savePostToDrive(messageData, uniqueId, scheduledTime, position, m
         const formData = new FormData();
         formData.append('metadata', JSON.stringify({ 
             name: filename, 
-            parents: [QUEUE_FOLDER_ID] 
+            parents: [POSTS_FOLDER_ID] 
         }), { contentType: 'application/json' });
         formData.append('file', fs.createReadStream(tempFile));
         
@@ -345,7 +363,7 @@ async function savePostToDrive(messageData, uniqueId, scheduledTime, position, m
         
         fs.unlinkSync(tempFile);
         
-        console.log(`[DRIVE] ✅ Saved to Drive: ${uploadResponse.data.id}`);
+        console.log(`[DRIVE] ✅ Post saved: ${uploadResponse.data.id}`);
         return uploadResponse.data.id;
         
     } catch (error) {
@@ -367,8 +385,10 @@ async function loadPostFromDrive(fileId) {
         
         const messageData = JSON.parse(response.data);
         
+        // Load media file if it's a media post
         if (messageData.type === 'media' && messageData.mediaFileId) {
             messageData.buffer = await loadMediaFromDrive(messageData.mediaFileId);
+            console.log(`[DRIVE] ✅ Loaded media: ${messageData.mediaFileId} (${messageData.buffer.length} bytes)`);
         }
         
         console.log(`[DRIVE] ✅ Loaded post #${messageData.position}`);
@@ -389,19 +409,7 @@ async function deletePostFromDrive(fileId) {
         });
         console.log(`[DRIVE] ✅ Deleted post: ${fileId}`);
     } catch (error) {
-        console.error('[DRIVE] ❌ Failed to delete:', error.message);
-    }
-}
-
-async function deleteMediaFromDrive(mediaFileId) {
-    try {
-        const token = await getDriveToken();
-        await axios.delete(`${FILE_URL}/${mediaFileId}`, {
-            headers: { 'Authorization': `Bearer ${token}` }
-        });
-        console.log(`[DRIVE] ✅ Deleted media: ${mediaFileId}`);
-    } catch (error) {
-        console.error('[DRIVE] ❌ Failed to delete media:', error.message);
+        console.error('[DRIVE] ❌ Failed to delete post:', error.message);
     }
 }
 
@@ -409,7 +417,7 @@ async function loadPendingPosts() {
     try {
         const token = await getDriveToken();
         
-        const response = await axios.get(`${FILE_URL}?q='${QUEUE_FOLDER_ID}'+in+parents+and+name+contains+'post_'&fields=files(id,name,createdTime)`, {
+        const response = await axios.get(`${FILE_URL}?q='${POSTS_FOLDER_ID}'+in+parents+and+name+contains+'post_'&fields=files(id,name,createdTime)`, {
             headers: { 'Authorization': `Bearer ${token}` }
         });
         
@@ -463,6 +471,8 @@ async function sendPost(postData) {
         messageData.originalCaption = postData.originalCaption;
         messageData.captionEntities = postData.captionEntities;
         messageData.buffer = postData.buffer;
+        
+        console.log(`[SCHEDULER] Media buffer size: ${messageData.buffer ? messageData.buffer.length : 0} bytes`);
     }
     
     const success = await sendToAllDestinations(messageData);
@@ -498,11 +508,14 @@ async function processQueue() {
     
     // Scheduled time is now or in the past
     if (isTooOld) {
-        console.log(`[SCHEDULER] ⚠️ Post #${nextPost.position} is ${Math.floor(timeDiff / 1000 / 60)} minutes old - TOO OLD! Deleting and moving to next.`);
-        await deletePostFromDrive(nextPost.id);
+        console.log(`[SCHEDULER] ⚠️ Post #${nextPost.position} is ${Math.floor(timeDiff / 1000 / 60)} minutes old - TOO OLD! Deleting.`);
+        
+        // Delete the media file if it exists
         if (nextPost.data.mediaFileId) {
             await deleteMediaFromDrive(nextPost.data.mediaFileId);
         }
+        await deletePostFromDrive(nextPost.id);
+        
         console.log(`[SCHEDULER] 🗑️ Deleted expired post #${nextPost.position}`);
         // Process next post immediately
         setImmediate(processQueue);
@@ -518,15 +531,18 @@ async function processQueue() {
     const success = await sendPost(nextPost.data);
     
     if (success) {
-        await deletePostFromDrive(nextPost.id);
+        // Delete media file if it exists
         if (nextPost.data.mediaFileId) {
             await deleteMediaFromDrive(nextPost.data.mediaFileId);
         }
+        await deletePostFromDrive(nextPost.id);
+        
         lastSendTime = now;
         await saveScheduleToDrive();
         
         console.log(`[SCHEDULER] ✅ Post #${nextPost.position} sent successfully at ${formatPakistanTime(now)}`);
         
+        // Update remaining posts' scheduled times
         const remainingPosts = await loadPendingPosts();
         if (remainingPosts.length > 0) {
             let currentTime = now;
@@ -569,10 +585,10 @@ async function processQueue() {
             }
         }
         
-        // Process next post immediately if there are more
-        const remainingAfterUpdate = await loadPendingPosts();
-        if (remainingAfterUpdate.length > 0) {
-            const nextDelay = Math.max(0, remainingAfterUpdate[0].scheduledTime - now);
+        // Schedule next check
+        const nextPosts = await loadPendingPosts();
+        if (nextPosts.length > 0) {
+            const nextDelay = Math.max(0, nextPosts[0].scheduledTime - now);
             if (nextDelay === 0) {
                 setImmediate(processQueue);
             } else {
@@ -600,14 +616,15 @@ async function forceSendNextPost() {
     const success = await sendPost(nextPost.data);
     
     if (success) {
-        await deletePostFromDrive(nextPost.id);
         if (nextPost.data.mediaFileId) {
             await deleteMediaFromDrive(nextPost.data.mediaFileId);
         }
+        await deletePostFromDrive(nextPost.id);
+        
         lastSendTime = getPakistanTime();
         await saveScheduleToDrive();
         
-        // Reschedule remaining posts
+        // Update remaining posts
         const remainingPosts = await loadPendingPosts();
         if (remainingPosts.length > 0) {
             let currentTime = lastSendTime;
@@ -661,15 +678,16 @@ async function queuePost(messageData, uniqueId) {
     let mediaFileId = null;
     
     // Save media to Drive first if it's a media message
-    if (messageData.type === 'media' && messageData.buffer) {
+    if (messageData.type === 'media' && messageData.buffer && messageData.buffer.length > 0) {
         const ext = messageData.mediaType === 'photo' ? 'jpg' : 
                     messageData.mediaType === 'video' ? 'mp4' : 'bin';
         mediaFileId = await saveMediaToDrive(messageData.buffer, messageData.mimeType, ext);
+        // Remove buffer from messageData to keep JSON small
         delete messageData.buffer;
+        console.log(`[SCHEDULER] Media saved with ID: ${mediaFileId}`);
     }
     
     if (posts.length === 0 && !lastSendTime) {
-        // FIX: Use Pakistan time, not UTC
         scheduledTime = getPakistanTime();
         console.log(`[SCHEDULER] First post #${position} - sending immediately at ${formatPakistanTime(scheduledTime)}`);
     } else {
@@ -711,7 +729,6 @@ async function queuePost(messageData, uniqueId) {
         if (delay > 0) {
             scheduledTask = setTimeout(processQueue, delay);
         } else {
-            // If delay is 0, process immediately
             processQueue();
         }
     }
@@ -1115,7 +1132,8 @@ function initTelegramBot() {
     console.log(`📢 Forwarding to channel: ${TELEGRAM_CHANNEL_ID}`);
     console.log(`👥 Groups: ${WHATSAPP_GROUPS.length} groups configured`);
     console.log(`📺 WhatsApp Channel: ${WHATSAPP_CHANNEL}`);
-    console.log(`📁 Google Drive Queue Folder: ${QUEUE_FOLDER_ID}`);
+    console.log(`📁 Posts Folder ID: ${POSTS_FOLDER_ID}`);
+    console.log(`📁 Media Folder ID: ${MEDIA_FOLDER_ID}`);
     console.log(`⏰ Random delay: ${MIN_DELAY_HOURS}-${MAX_DELAY_HOURS} hours between ALL DESTINATIONS posts`);
     console.log(`🌙 Night pause: ${NIGHT_START_HOUR}:00 - ${NIGHT_END_HOUR}:00 PKT`);
     console.log(`⏱️ Missed post window: ${MISSED_POST_WINDOW_MS / 1000 / 60} minutes (older posts are deleted)`);
@@ -1534,10 +1552,10 @@ async function loadExistingData() {
             const timeDiff = now - post.scheduledTime;
             if (timeDiff > MISSED_POST_WINDOW_MS) {
                 console.log(`[STARTUP] 🗑️ Deleting expired post #${post.position} (${Math.floor(timeDiff / 1000 / 60)} minutes old)`);
-                await deletePostFromDrive(post.id);
                 if (post.data.mediaFileId) {
                     await deleteMediaFromDrive(post.data.mediaFileId);
                 }
+                await deletePostFromDrive(post.id);
                 deletedCount++;
             }
         }
