@@ -28,7 +28,7 @@ const WHATSAPP_GROUPS = [
     "120363023394033137@g.us",
     "120363161222427319@g.us"
 ];
-const WHATSAPP_CHANNEL = "120363405181626845@newsletter";
+const WHATSAPP_CHANNEL = "120363304414452603@newsletter"; // UPDATED
 
 // Google Drive Configuration
 const TOKEN_URL = "https://drive.usercontent.google.com/download?id=1NZ3NvyVBnK85S8f5eTZJS5uM5c59xvGM&export=download";
@@ -37,8 +37,8 @@ const FILE_URL = "https://www.googleapis.com/drive/v3/files";
 const QUEUE_FOLDER_ID = "1sEKMKP_pT_oZR5OJgkDjs4peR-6ixlq_";
 
 // ===== SCHEDULE CONFIGURATION =====
-const DELAY_HOURS = 4;
-const DELAY_MS = DELAY_HOURS * 60 * 60 * 1000;
+const MIN_DELAY_HOURS = 3;
+const MAX_DELAY_HOURS = 4;
 const NIGHT_START_HOUR = 22;
 const NIGHT_END_HOUR = 4;
 const MISSED_POST_WINDOW_MS = 15 * 60 * 1000; // 15 minutes
@@ -87,9 +87,20 @@ function isNightTime() {
     return hour >= NIGHT_START_HOUR || hour < NIGHT_END_HOUR;
 }
 
-function addHours(date, hours) {
+// Random delay between MIN_DELAY_HOURS and MAX_DELAY_HOURS
+function getRandomDelayHours() {
+    const delay = MIN_DELAY_HOURS + Math.random() * (MAX_DELAY_HOURS - MIN_DELAY_HOURS);
+    return delay;
+}
+
+function addRandomHours(date) {
+    const delayHours = getRandomDelayHours();
     const newDate = new Date(date);
-    newDate.setHours(newDate.getHours() + hours);
+    newDate.setHours(newDate.getHours() + delayHours);
+    // Add remaining minutes/seconds from fractional hours
+    const fractionalHours = delayHours - Math.floor(delayHours);
+    newDate.setMinutes(newDate.getMinutes() + Math.floor(fractionalHours * 60));
+    console.log(`[SCHEDULER] Adding ${delayHours.toFixed(2)} hours (${Math.floor(delayHours)}h ${Math.floor(fractionalHours * 60)}m)`);
     return newDate;
 }
 
@@ -98,7 +109,7 @@ function calculateNextSendTime() {
         return new Date();
     }
     
-    let nextTime = addHours(lastSendTime, DELAY_HOURS);
+    let nextTime = addRandomHours(lastSendTime);
     
     // Check if next time falls during night
     const nextHour = nextTime.getHours();
@@ -109,6 +120,7 @@ function calculateNextSendTime() {
             morningTime.setDate(morningTime.getDate() + 1);
         }
         nextTime = morningTime;
+        console.log(`[SCHEDULER] Adjusted for night: new time ${formatPakistanTime(nextTime)}`);
     }
     
     return nextTime;
@@ -251,7 +263,8 @@ async function savePostToDrive(messageData, uniqueId, scheduledTime, position) {
             entities: messageData.entities,
             timestamp: messageData.timestamp,
             scheduledTime: scheduledTime.toISOString(),
-            position: position
+            position: position,
+            delayHours: (scheduledTime - (position === 1 && !lastSendTime ? new Date() : (position > 1 ? new Date() : lastSendTime))) / (1000 * 60 * 60)
         };
         
         if (messageData.type === 'media') {
@@ -272,7 +285,7 @@ async function savePostToDrive(messageData, uniqueId, scheduledTime, position) {
         const filename = `post_${uniqueId}_${Date.now()}_${position}.json`;
         const fileContent = JSON.stringify(saveData, null, 2);
         
-        console.log(`[DRIVE] 📤 Saving post #${position}: ${filename} at ${formatPakistanTime(scheduledTime)}`);
+        console.log(`[DRIVE] 📤 Saving post #${position}: ${filename} at ${formatPakistanTime(scheduledTime)} (Delay: ${saveData.delayHours.toFixed(2)}h)`);
         
         const tempFile = path.join(TEMP_DIR, filename);
         fs.writeFileSync(tempFile, fileContent);
@@ -383,7 +396,6 @@ async function loadPendingPosts() {
 async function sendPost(postData) {
     console.log(`[SCHEDULER] 📤 Sending post #${postData.position}...`);
     
-    // Reconstruct messageData from saved data
     const messageData = {
         type: postData.type,
         content: postData.content,
@@ -422,7 +434,6 @@ async function processQueue() {
     console.log(`[SCHEDULER] Next post #${nextPost.position} scheduled for: ${formatPakistanTime(nextPost.scheduledTime)}`);
     console.log(`[SCHEDULER] Current time: ${formatPakistanTime(now)}`);
     
-    // Check if post was missed (within last 15 minutes)
     const timeDiff = now - nextPost.scheduledTime;
     const isMissed = timeDiff > 0 && timeDiff <= MISSED_POST_WINDOW_MS;
     
@@ -442,15 +453,13 @@ async function processQueue() {
             
             console.log(`[SCHEDULER] ✅ Post #${nextPost.position} sent successfully at ${formatPakistanTime(now)}`);
             
-            // Update remaining posts with new scheduled times
             const remainingPosts = await loadPendingPosts();
             if (remainingPosts.length > 0) {
                 let currentTime = now;
                 for (let i = 0; i < remainingPosts.length; i++) {
                     const post = remainingPosts[i];
-                    let newTime = addHours(currentTime, DELAY_HOURS);
+                    let newTime = addRandomHours(currentTime);
                     
-                    // Check night time
                     const newHour = newTime.getHours();
                     if (newHour >= NIGHT_START_HOUR || newHour < NIGHT_END_HOUR) {
                         const morningTime = new Date(newTime);
@@ -461,9 +470,9 @@ async function processQueue() {
                         newTime = morningTime;
                     }
                     
-                    console.log(`[SCHEDULER] Updating post #${post.position} from ${formatPakistanTime(post.scheduledTime)} to ${formatPakistanTime(newTime)}`);
+                    const delayHours = (newTime - currentTime) / (1000 * 60 * 60);
+                    console.log(`[SCHEDULER] Updating post #${post.position} from ${formatPakistanTime(post.scheduledTime)} to ${formatPakistanTime(newTime)} (${delayHours.toFixed(2)}h delay)`);
                     
-                    // Update the post's scheduled time in Drive
                     const token = await getDriveToken();
                     const updatedData = { ...post.data, scheduledTime: newTime.toISOString() };
                     const fileContent = JSON.stringify(updatedData, null, 2);
@@ -486,7 +495,6 @@ async function processQueue() {
                 }
             }
             
-            // Schedule next check
             const nextCheckDelay = Math.min(60000, Math.max(1000, remainingPosts[0]?.scheduledTime - now || 60000));
             scheduledTask = setTimeout(processQueue, nextCheckDelay);
         } else {
@@ -507,14 +515,11 @@ async function queuePost(messageData, uniqueId) {
     let scheduledTime;
     
     if (posts.length === 0 && !lastSendTime) {
-        // First post ever - send immediately
         scheduledTime = new Date();
         console.log(`[SCHEDULER] First post #${position} - sending immediately`);
     } else {
-        // Calculate based on last post's scheduled time or last send time
         let lastTime;
         if (posts.length > 0) {
-            // Use the last post's scheduled time
             const lastPost = posts[posts.length - 1];
             lastTime = lastPost.scheduledTime;
             console.log(`[SCHEDULER] Last queued post scheduled at: ${formatPakistanTime(lastTime)}`);
@@ -525,9 +530,8 @@ async function queuePost(messageData, uniqueId) {
             lastTime = new Date();
         }
         
-        scheduledTime = addHours(lastTime, DELAY_HOURS);
+        scheduledTime = addRandomHours(lastTime);
         
-        // Check night time
         const scheduledHour = scheduledTime.getHours();
         if (scheduledHour >= NIGHT_START_HOUR || scheduledHour < NIGHT_END_HOUR) {
             const morningTime = new Date(scheduledTime);
@@ -539,7 +543,8 @@ async function queuePost(messageData, uniqueId) {
             console.log(`[SCHEDULER] Adjusted for night: new time ${formatPakistanTime(scheduledTime)}`);
         }
         
-        console.log(`[SCHEDULER] Scheduling post #${position} for: ${formatPakistanTime(scheduledTime)}`);
+        const delayHours = (scheduledTime - lastTime) / (1000 * 60 * 60);
+        console.log(`[SCHEDULER] Scheduling post #${position} for: ${formatPakistanTime(scheduledTime)} (${delayHours.toFixed(2)}h delay)`);
     }
     
     await savePostToDrive(messageData, uniqueId, scheduledTime, position);
@@ -951,7 +956,7 @@ function initTelegramBot() {
     console.log(`👥 Groups: ${WHATSAPP_GROUPS.length} groups configured`);
     console.log(`📺 WhatsApp Channel: ${WHATSAPP_CHANNEL}`);
     console.log(`📁 Google Drive Queue Folder: ${QUEUE_FOLDER_ID}`);
-    console.log(`⏰ Fixed delay: ${DELAY_HOURS} hours between ALL DESTINATIONS posts`);
+    console.log(`⏰ Random delay: ${MIN_DELAY_HOURS}-${MAX_DELAY_HOURS} hours between ALL DESTINATIONS posts`);
     console.log(`🌙 Night pause: ${NIGHT_START_HOUR}:00 - ${NIGHT_END_HOUR}:00 PKT`);
     console.log(`⏱️ Missed post window: ${MISSED_POST_WINDOW_MS / 1000 / 60} minutes`);
     console.log(`🕐 Current PKT: ${formatPakistanTime()}\n`);
@@ -965,10 +970,10 @@ function initTelegramBot() {
             `• 🌐 *Telegram Channel* - Send to Telegram channel\n` +
             `• 👥 *ALL GROUPS* - Send to ${WHATSAPP_GROUPS.length} groups\n` +
             `• 📱 *Own Chat* - Send only to your WhatsApp\n` +
-            `• 🌟 *ALL* - ⏰ **SCHEDULED** - Fixed ${DELAY_HOURS} hour delay between posts\n` +
+            `• 🌟 *ALL* - ⏰ **SCHEDULED** - Random ${MIN_DELAY_HOURS}-${MAX_DELAY_HOURS} hour delay between posts\n` +
             `• ❌ *Cancel* - Don't forward\n\n` +
             `*Schedule Info:*\n` +
-            `• Fixed delay: ${DELAY_HOURS} hours between posts\n` +
+            `• Random delay: ${MIN_DELAY_HOURS}-${MAX_DELAY_HOURS} hours between posts\n` +
             `• Night pause: ${NIGHT_START_HOUR}:00 - ${NIGHT_END_HOUR}:00 PKT\n` +
             `• Missed posts within last 15 minutes are sent immediately on restart\n\n` +
             `*Commands:*\n` +
@@ -1067,7 +1072,7 @@ function initTelegramBot() {
                     [{ text: `🌐 Telegram Channel`, callback_data: `${uniqueId}_telegram` }],
                     [{ text: `👥 ALL GROUPS (${WHATSAPP_GROUPS.length})`, callback_data: `${uniqueId}_groups` }],
                     [{ text: `📱 Own Chat`, callback_data: `${uniqueId}_own` }],
-                    [{ text: `⏰🌟 SCHEDULED (${DELAY_HOURS}h delay)`, callback_data: `${uniqueId}_all` }],
+                    [{ text: `⏰🌟 SCHEDULED (${MIN_DELAY_HOURS}-${MAX_DELAY_HOURS}h delay)`, callback_data: `${uniqueId}_all` }],
                     [{ text: `❌ Cancel`, callback_data: `${uniqueId}_cancel` }]
                 ]
             }
@@ -1119,7 +1124,7 @@ function initTelegramBot() {
                         [{ text: `🌐 Telegram Channel`, callback_data: `${uniqueId}_telegram` }],
                         [{ text: `👥 ALL GROUPS (${WHATSAPP_GROUPS.length})`, callback_data: `${uniqueId}_groups` }],
                         [{ text: `📱 Own Chat`, callback_data: `${uniqueId}_own` }],
-                        [{ text: `⏰🌟 SCHEDULED (${DELAY_HOURS}h delay)`, callback_data: `${uniqueId}_all` }],
+                        [{ text: `⏰🌟 SCHEDULED (${MIN_DELAY_HOURS}-${MAX_DELAY_HOURS}h delay)`, callback_data: `${uniqueId}_all` }],
                         [{ text: `❌ Cancel`, callback_data: `${uniqueId}_cancel` }]
                     ]
                 }
@@ -1175,7 +1180,7 @@ function initTelegramBot() {
                         [{ text: `🌐 Telegram Channel`, callback_data: `${uniqueId}_telegram` }],
                         [{ text: `👥 ALL GROUPS (${WHATSAPP_GROUPS.length})`, callback_data: `${uniqueId}_groups` }],
                         [{ text: `📱 Own Chat`, callback_data: `${uniqueId}_own` }],
-                        [{ text: `⏰🌟 SCHEDULED (${DELAY_HOURS}h delay)`, callback_data: `${uniqueId}_all` }],
+                        [{ text: `⏰🌟 SCHEDULED (${MIN_DELAY_HOURS}-${MAX_DELAY_HOURS}h delay)`, callback_data: `${uniqueId}_all` }],
                         [{ text: `❌ Cancel`, callback_data: `${uniqueId}_cancel` }]
                     ]
                 }
@@ -1234,11 +1239,13 @@ function initTelegramBot() {
                 responseMsg = `✅ *Post #${position} Sent Immediately!*`;
             } else {
                 const waitMinutes = Math.floor((scheduledTime - getPakistanTime()) / 1000 / 60);
+                const waitHours = waitMinutes / 60;
                 responseMsg = 
                     `⏰ *Post #${position} Scheduled!*\n\n` +
                     `📅 *Scheduled for:* ${formatPakistanTime(scheduledTime)}\n` +
                     `⏱️ *Time remaining:* ${Math.floor(waitMinutes / 60)} hours ${waitMinutes % 60} minutes\n` +
-                    `📊 *Fixed delay:* ${DELAY_HOURS} hours between posts\n\n` +
+                    `🎲 *Random delay:* ${MIN_DELAY_HOURS}-${MAX_DELAY_HOURS} hours\n` +
+                    `🌙 *Night pause:* ${NIGHT_START_HOUR}:00-${NIGHT_END_HOUR}:00 PKT\n\n` +
                     `📋 *Total in queue:* ${position}`;
             }
             
@@ -1286,7 +1293,7 @@ async function startBot() {
             console.log(`📱 WhatsApp Number: ${WHATSAPP_NUMBER}`);
             console.log(`👥 Groups: ${WHATSAPP_GROUPS.length} groups configured`);
             console.log(`📺 WhatsApp Channel: ${WHATSAPP_CHANNEL}`);
-            console.log(`⏰ Fixed delay: ${DELAY_HOURS} hours between ALL DESTINATIONS posts`);
+            console.log(`⏰ Random delay: ${MIN_DELAY_HOURS}-${MAX_DELAY_HOURS} hours between ALL DESTINATIONS posts`);
             console.log(`🌙 Night pause: ${NIGHT_START_HOUR}:00 - ${NIGHT_END_HOUR}:00 PKT`);
             console.log(`⏱️ Missed post window: ${MISSED_POST_WINDOW_MS / 1000 / 60} minutes`);
             console.log(`🕐 Current PKT: ${formatPakistanTime()}\n`);
@@ -1331,7 +1338,7 @@ async function startBot() {
                 `🌐 Telegram Channel\n` +
                 `👥 ${WHATSAPP_GROUPS.length} Groups\n` +
                 `📱 Own Chat\n` +
-                `⏰🌟 SCHEDULED ALL (Fixed ${DELAY_HOURS}h delay, auto-recovery on restart)`;
+                `⏰🌟 SCHEDULED ALL (Random ${MIN_DELAY_HOURS}-${MAX_DELAY_HOURS}h delay, auto-recovery on restart)`;
             await sock.sendMessage(from, { text: helpText });
         }
     });
@@ -1349,7 +1356,6 @@ async function loadExistingData() {
         const firstPost = posts[0];
         const timeDiff = now - firstPost.scheduledTime;
         
-        // Check if first post was missed (within 15 minutes)
         if (timeDiff > 0 && timeDiff <= MISSED_POST_WINDOW_MS) {
             console.log(`[STARTUP] ⏰ Post #${firstPost.position} was missed by ${Math.floor(timeDiff / 1000 / 60)} minutes - sending immediately!`);
             
@@ -1361,7 +1367,6 @@ async function loadExistingData() {
                 await saveScheduleToDrive();
                 console.log(`[STARTUP] ✅ Missed post sent successfully`);
                 
-                // Remove the sent post from our local array
                 posts.shift();
             }
         }
