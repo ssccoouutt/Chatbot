@@ -36,6 +36,7 @@ const UPLOAD_URL = "https://www.googleapis.com/upload/drive/v3/files?uploadType=
 const FILE_URL = "https://www.googleapis.com/drive/v3/files";
 const POSTS_FOLDER_ID = "1sEKMKP_pT_oZR5OJgkDjs4peR-6ixlq_";
 const MEDIA_FOLDER_ID = "1pll1-8s83ZUna1K9lL_miFkYsiEvxh-z";
+const SCHEDULE_FILE_ID = "1tzY2CysClbADcj1zEgLwfzzRAFYOr6Wu"; // Hardcoded schedule file ID
 
 // ===== SCHEDULE CONFIGURATION =====
 const MIN_DELAY_HOURS = 3;
@@ -98,6 +99,7 @@ function addRandomHours(date) {
     newDate.setHours(newDate.getHours() + delayHours);
     const fractionalHours = delayHours - Math.floor(delayHours);
     newDate.setMinutes(newDate.getMinutes() + Math.floor(fractionalHours * 60));
+    console.log(`[SCHEDULER] Adding ${delayHours.toFixed(2)} hours delay`);
     return newDate;
 }
 
@@ -151,7 +153,7 @@ async function getDriveToken() {
     return cachedToken;
 }
 
-// SCHEDULE FUNCTIONS - Using simple text file in Drive
+// SCHEDULE FUNCTIONS - Using hardcoded file ID
 async function saveScheduleToDrive() {
     try {
         const token = await getDriveToken();
@@ -159,48 +161,27 @@ async function saveScheduleToDrive() {
         const tempFile = path.join(TEMP_DIR, 'schedule.txt');
         fs.writeFileSync(tempFile, content);
         
-        // Find existing schedule file
-        let fileId = null;
-        try {
-            const listResponse = await axios.get(`${FILE_URL}?q=name='schedule.txt' and '${POSTS_FOLDER_ID}'+in+parents&fields=files(id)`, {
-                headers: { 'Authorization': `Bearer ${token}` }
-            });
-            if (listResponse.data.files && listResponse.data.files.length > 0) {
-                fileId = listResponse.data.files[0].id;
-            }
-        } catch (e) {}
+        console.log(`[DRIVE] 📤 Saving schedule to file ID: ${SCHEDULE_FILE_ID}`);
+        console.log(`[DRIVE] Content: ${content || '(empty)'}`);
         
-        if (fileId) {
-            // Update existing file - use media upload
-            await axios.patch(`${FILE_URL}/${fileId}?uploadType=media`, fs.createReadStream(tempFile), {
-                headers: {
-                    'Authorization': `Bearer ${token}`,
-                    'Content-Type': 'text/plain'
-                }
-            });
-            console.log('[DRIVE] ✅ Schedule updated');
-        } else {
-            // Create new file
-            const formData = new FormData();
-            formData.append('metadata', JSON.stringify({ 
-                name: 'schedule.txt', 
-                parents: [POSTS_FOLDER_ID],
-                mimeType: 'text/plain'
-            }), { contentType: 'application/json' });
-            formData.append('file', fs.createReadStream(tempFile));
-            
-            await axios.post(UPLOAD_URL, formData, {
-                headers: {
-                    'Authorization': `Bearer ${token}`,
-                    ...formData.getHeaders()
-                }
-            });
-            console.log('[DRIVE] ✅ Schedule created');
-        }
+        // Use the hardcoded file ID directly with media upload
+        await axios.patch(`${FILE_URL}/${SCHEDULE_FILE_ID}?uploadType=media`, fs.createReadStream(tempFile), {
+            headers: {
+                'Authorization': `Bearer ${token}`,
+                'Content-Type': 'text/plain'
+            }
+        });
         
         fs.unlinkSync(tempFile);
+        console.log('[DRIVE] ✅ Schedule saved successfully');
+        
     } catch (error) {
-        console.error('[DRIVE] ⚠️ Failed to save schedule:', error.message);
+        console.error('[DRIVE] ❌ Failed to save schedule:', error.message);
+        if (error.response) {
+            console.error('[DRIVE] Response status:', error.response.status);
+            console.error('[DRIVE] Response data:', error.response.data);
+        }
+        // Don't throw, just log
     }
 }
 
@@ -208,26 +189,22 @@ async function loadScheduleFromDrive() {
     try {
         const token = await getDriveToken();
         
-        const listResponse = await axios.get(`${FILE_URL}?q=name='schedule.txt' and '${POSTS_FOLDER_ID}'+in+parents&fields=files(id)`, {
-            headers: { 'Authorization': `Bearer ${token}` }
+        console.log(`[DRIVE] 📥 Loading schedule from file ID: ${SCHEDULE_FILE_ID}`);
+        
+        const response = await axios.get(`${FILE_URL}/${SCHEDULE_FILE_ID}?alt=media`, {
+            headers: { 'Authorization': `Bearer ${token}` },
+            responseType: 'text'
         });
         
-        if (listResponse.data.files && listResponse.data.files.length > 0) {
-            const fileId = listResponse.data.files[0].id;
-            const response = await axios.get(`${FILE_URL}/${fileId}?alt=media`, {
-                headers: { 'Authorization': `Bearer ${token}` },
-                responseType: 'text'
-            });
-            const content = response.data;
-            if (content) {
-                lastSendTime = new Date(content);
-                console.log(`[DRIVE] ✅ Schedule loaded - Last send: ${formatPakistanTime(lastSendTime)}`);
-            } else {
-                lastSendTime = null;
-            }
+        const content = response.data;
+        console.log(`[DRIVE] Loaded content: ${content || '(empty)'}`);
+        
+        if (content) {
+            lastSendTime = new Date(content);
+            console.log(`[DRIVE] ✅ Schedule loaded - Last send: ${formatPakistanTime(lastSendTime)}`);
         } else {
-            console.log('[DRIVE] No schedule file found, starting fresh');
             lastSendTime = null;
+            console.log('[DRIVE] Schedule file empty, starting fresh');
         }
     } catch (error) {
         console.log('[DRIVE] No schedule found, starting fresh');
@@ -733,17 +710,20 @@ async function processQueue() {
     
     if (nextPost.scheduledTime > now) {
         const delay = nextPost.scheduledTime - now;
+        console.log(`[SCHEDULER] Waiting ${Math.floor(delay / 1000 / 60)} minutes until next post`);
         scheduledTask = setTimeout(processQueue, delay);
         return;
     }
     
     if (timeDiff > MISSED_POST_WINDOW_MS) {
+        console.log(`[SCHEDULER] Post #${nextPost.position} is ${Math.floor(timeDiff / 1000 / 60)} minutes old - DELETING`);
         if (nextPost.data.mediaFileId) await deleteMediaFromDrive(nextPost.data.mediaFileId);
         await deletePostFromDrive(nextPost.id);
         setImmediate(processQueue);
         return;
     }
     
+    console.log(`[SCHEDULER] Sending post #${nextPost.position}`);
     processingPosts.add(nextPost.id);
     const loadedPost = await loadPostFromDrive(nextPost.id);
     
@@ -754,6 +734,7 @@ async function processQueue() {
             await deletePostFromDrive(nextPost.id);
             lastSendTime = now;
             await saveScheduleToDrive();
+            console.log(`[SCHEDULER] ✅ Post #${nextPost.position} sent successfully`);
         }
     }
     
@@ -776,6 +757,7 @@ async function queuePost(messageData, uniqueId) {
     
     if (posts.length === 0 && !lastSendTime) {
         scheduledTime = getPakistanTime();
+        console.log(`[QUEUE] First post - sending immediately`);
     } else {
         let lastTime;
         if (posts.length > 0) {
@@ -792,7 +774,9 @@ async function queuePost(messageData, uniqueId) {
             morningTime.setHours(NIGHT_END_HOUR, 0, 0, 0);
             if (morningTime <= scheduledTime) morningTime.setDate(morningTime.getDate() + 1);
             scheduledTime = morningTime;
+            console.log(`[QUEUE] Adjusted for night: ${formatPakistanTime(scheduledTime)}`);
         }
+        console.log(`[QUEUE] Post #${position} scheduled for: ${formatPakistanTime(scheduledTime)}`);
     }
     
     const postId = await savePostToDrive(messageData, uniqueId, scheduledTime, position, mediaFileId);
@@ -800,6 +784,7 @@ async function queuePost(messageData, uniqueId) {
     const isImmediate = scheduledTime <= now;
     
     if (isImmediate && mediaBuffer) {
+        console.log(`[QUEUE] Sending immediate post #${position}`);
         messageData.buffer = mediaBuffer;
         const success = await sendToAllDestinations(messageData);
         if (success) {
@@ -807,6 +792,7 @@ async function queuePost(messageData, uniqueId) {
             await deletePostFromDrive(postId);
             lastSendTime = now;
             await saveScheduleToDrive();
+            console.log(`[QUEUE] ✅ Immediate post #${position} sent`);
             return { scheduledTime, position, sent: true };
         }
     }
@@ -815,8 +801,11 @@ async function queuePost(messageData, uniqueId) {
         const nextPosts = await loadPendingPosts();
         if (nextPosts.length > 0) {
             const delay = Math.max(0, nextPosts[0].scheduledTime - now);
-            if (delay > 0) scheduledTask = setTimeout(processQueue, delay);
-            else processQueue();
+            if (delay > 0) {
+                scheduledTask = setTimeout(processQueue, delay);
+            } else {
+                processQueue();
+            }
         }
     }
     
@@ -828,6 +817,7 @@ async function forceSendNextPost() {
     if (posts.length === 0) return { success: false, message: "No posts in queue" };
     
     const nextPost = posts[0];
+    console.log(`[FORCE] Sending post #${nextPost.position}`);
     processingPosts.add(nextPost.id);
     const loadedPost = await loadPostFromDrive(nextPost.id);
     
@@ -860,6 +850,7 @@ function initTelegramBot() {
     console.log(`👥 Groups: ${WHATSAPP_GROUPS.length} groups configured`);
     console.log(`📁 Posts Folder: ${POSTS_FOLDER_ID}`);
     console.log(`📁 Media Folder: ${MEDIA_FOLDER_ID}`);
+    console.log(`📁 Schedule File ID: ${SCHEDULE_FILE_ID}`);
     console.log(`⏰ Random delay: ${MIN_DELAY_HOURS}-${MAX_DELAY_HOURS} hours`);
     console.log(`🕐 Current PKT: ${formatPakistanTime()}\n`);
     
