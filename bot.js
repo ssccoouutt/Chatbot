@@ -42,7 +42,7 @@ const MIN_DELAY_HOURS = 3;
 const MAX_DELAY_HOURS = 4;
 const NIGHT_START_HOUR = 22;
 const NIGHT_END_HOUR = 4;
-const MISSED_POST_WINDOW_MS = 15 * 60 * 1000; // 15 minutes
+const MISSED_POST_WINDOW_MS = 15 * 60 * 1000;
 
 // ===== CONSTANTS =====
 const TEMP_DIR = path.join(process.cwd(), 'temp');
@@ -90,8 +90,7 @@ function isNightTime() {
 }
 
 function getRandomDelayHours() {
-    const delay = MIN_DELAY_HOURS + Math.random() * (MAX_DELAY_HOURS - MIN_DELAY_HOURS);
-    return delay;
+    return MIN_DELAY_HOURS + Math.random() * (MAX_DELAY_HOURS - MIN_DELAY_HOURS);
 }
 
 function addRandomHours(date) {
@@ -100,7 +99,6 @@ function addRandomHours(date) {
     newDate.setHours(newDate.getHours() + delayHours);
     const fractionalHours = delayHours - Math.floor(delayHours);
     newDate.setMinutes(newDate.getMinutes() + Math.floor(fractionalHours * 60));
-    console.log(`[SCHEDULER] Adding ${delayHours.toFixed(2)} hours`);
     return newDate;
 }
 
@@ -157,13 +155,9 @@ async function getDriveToken() {
 async function saveScheduleToDrive() {
     try {
         const token = await getDriveToken();
-        const scheduleData = {
-            lastSendTime: lastSendTime ? lastSendTime.toISOString() : null
-        };
-        
-        const fileContent = JSON.stringify(scheduleData, null, 2);
+        const scheduleData = { lastSendTime: lastSendTime ? lastSendTime.toISOString() : null };
         const tempFile = path.join(TEMP_DIR, SCHEDULE_FILE);
-        fs.writeFileSync(tempFile, fileContent);
+        fs.writeFileSync(tempFile, JSON.stringify(scheduleData, null, 2));
         
         let fileId = null;
         try {
@@ -176,25 +170,16 @@ async function saveScheduleToDrive() {
         } catch (e) {}
         
         const formData = new FormData();
-        formData.append('metadata', JSON.stringify({ 
-            name: SCHEDULE_FILE,
-            parents: [POSTS_FOLDER_ID]
-        }), { contentType: 'application/json' });
+        formData.append('metadata', JSON.stringify({ name: SCHEDULE_FILE, parents: [POSTS_FOLDER_ID] }), { contentType: 'application/json' });
         formData.append('file', fs.createReadStream(tempFile));
         
         if (fileId) {
             await axios.patch(`${FILE_URL}/${fileId}?uploadType=multipart`, formData, {
-                headers: {
-                    'Authorization': `Bearer ${token}`,
-                    ...formData.getHeaders()
-                }
+                headers: { 'Authorization': `Bearer ${token}`, ...formData.getHeaders() }
             });
         } else {
             await axios.post(UPLOAD_URL, formData, {
-                headers: {
-                    'Authorization': `Bearer ${token}`,
-                    ...formData.getHeaders()
-                }
+                headers: { 'Authorization': `Bearer ${token}`, ...formData.getHeaders() }
             });
         }
         
@@ -208,7 +193,6 @@ async function saveScheduleToDrive() {
 async function loadScheduleFromDrive() {
     try {
         const token = await getDriveToken();
-        
         const listResponse = await axios.get(`${FILE_URL}?q=name='${SCHEDULE_FILE}' and '${POSTS_FOLDER_ID}'+in+parents&fields=files(id)`, {
             headers: { 'Authorization': `Bearer ${token}` }
         });
@@ -219,10 +203,8 @@ async function loadScheduleFromDrive() {
                 headers: { 'Authorization': `Bearer ${token}` },
                 responseType: 'text'
             });
-            
             const scheduleData = JSON.parse(response.data);
             lastSendTime = scheduleData.lastSendTime ? new Date(scheduleData.lastSendTime) : null;
-            
             console.log(`[DRIVE] ✅ Schedule loaded - Last send: ${lastSendTime ? formatPakistanTime(lastSendTime) : 'Never'}`);
         }
     } catch (error) {
@@ -238,24 +220,16 @@ async function saveMediaToDrive(buffer, mimeType, extension) {
         fs.writeFileSync(tempFile, buffer);
         
         const formData = new FormData();
-        formData.append('metadata', JSON.stringify({ 
-            name: filename, 
-            parents: [MEDIA_FOLDER_ID],
-            mimeType: mimeType
-        }), { contentType: 'application/json' });
+        formData.append('metadata', JSON.stringify({ name: filename, parents: [MEDIA_FOLDER_ID], mimeType: mimeType }), { contentType: 'application/json' });
         formData.append('file', fs.createReadStream(tempFile));
         
         const uploadResponse = await axios.post(UPLOAD_URL, formData, {
-            headers: {
-                'Authorization': `Bearer ${token}`,
-                ...formData.getHeaders()
-            }
+            headers: { 'Authorization': `Bearer ${token}`, ...formData.getHeaders() }
         });
         
         fs.unlinkSync(tempFile);
         console.log(`[DRIVE] ✅ Media saved: ${uploadResponse.data.id}`);
         return uploadResponse.data.id;
-        
     } catch (error) {
         console.error('[DRIVE] ❌ Failed to save media:', error.message);
         throw error;
@@ -279,9 +253,7 @@ async function loadMediaFromDrive(fileId) {
 async function deleteMediaFromDrive(fileId) {
     try {
         const token = await getDriveToken();
-        await axios.delete(`${FILE_URL}/${fileId}`, {
-            headers: { 'Authorization': `Bearer ${token}` }
-        });
+        await axios.delete(`${FILE_URL}/${fileId}`, { headers: { 'Authorization': `Bearer ${token}` } });
         console.log(`[DRIVE] ✅ Deleted media: ${fileId}`);
     } catch (error) {
         console.error('[DRIVE] ❌ Failed to delete media:', error.message);
@@ -314,32 +286,20 @@ async function savePostToDrive(messageData, uniqueId, scheduledTime, position, m
         }
         
         const filename = `post_${uniqueId}_${Date.now()}_${position}.json`;
-        const fileContent = JSON.stringify(saveData, null, 2);
-        
-        console.log(`[DRIVE] 📤 Saving post #${position}`);
-        
         const tempFile = path.join(TEMP_DIR, filename);
-        fs.writeFileSync(tempFile, fileContent);
+        fs.writeFileSync(tempFile, JSON.stringify(saveData, null, 2));
         
         const formData = new FormData();
-        formData.append('metadata', JSON.stringify({ 
-            name: filename, 
-            parents: [POSTS_FOLDER_ID] 
-        }), { contentType: 'application/json' });
+        formData.append('metadata', JSON.stringify({ name: filename, parents: [POSTS_FOLDER_ID] }), { contentType: 'application/json' });
         formData.append('file', fs.createReadStream(tempFile));
         
         const uploadResponse = await axios.post(UPLOAD_URL, formData, {
-            headers: {
-                'Authorization': `Bearer ${token}`,
-                ...formData.getHeaders()
-            }
+            headers: { 'Authorization': `Bearer ${token}`, ...formData.getHeaders() }
         });
         
         fs.unlinkSync(tempFile);
-        
         console.log(`[DRIVE] ✅ Post saved: ${uploadResponse.data.id}`);
         return uploadResponse.data.id;
-        
     } catch (error) {
         console.error('[DRIVE] ❌ Failed to save post:', error.message);
         throw error;
@@ -349,25 +309,17 @@ async function savePostToDrive(messageData, uniqueId, scheduledTime, position, m
 async function loadPostFromDrive(fileId) {
     try {
         const token = await getDriveToken();
-        
-        console.log(`[DRIVE] 📥 Loading scheduled post: ${fileId}`);
-        
         const response = await axios.get(`${FILE_URL}/${fileId}?alt=media`, {
             headers: { 'Authorization': `Bearer ${token}` },
             responseType: 'text'
         });
-        
         const messageData = JSON.parse(response.data);
-        console.log(`[DRIVE] ✅ Loaded post #${messageData.position}`);
         
         if (messageData.type === 'media' && messageData.mediaFileId) {
-            console.log(`[DRIVE] 📸 Loading media: ${messageData.mediaFileId}`);
             messageData.buffer = await loadMediaFromDrive(messageData.mediaFileId);
-            console.log(`[DRIVE] ✅ Loaded media: ${messageData.buffer.length} bytes`);
         }
         
         return messageData;
-        
     } catch (error) {
         console.error('[DRIVE] ❌ Failed to load post:', error.message);
         throw error;
@@ -377,9 +329,7 @@ async function loadPostFromDrive(fileId) {
 async function deletePostFromDrive(fileId) {
     try {
         const token = await getDriveToken();
-        await axios.delete(`${FILE_URL}/${fileId}`, {
-            headers: { 'Authorization': `Bearer ${token}` }
-        });
+        await axios.delete(`${FILE_URL}/${fileId}`, { headers: { 'Authorization': `Bearer ${token}` } });
         console.log(`[DRIVE] ✅ Deleted post: ${fileId}`);
     } catch (error) {
         console.error('[DRIVE] ❌ Failed to delete post:', error.message);
@@ -389,7 +339,6 @@ async function deletePostFromDrive(fileId) {
 async function loadPendingPosts() {
     try {
         const token = await getDriveToken();
-        
         const response = await axios.get(`${FILE_URL}?q='${POSTS_FOLDER_ID}'+in+parents+and+name+contains+'post_'&fields=files(id,name,createdTime)`, {
             headers: { 'Authorization': `Bearer ${token}` }
         });
@@ -398,11 +347,7 @@ async function loadPendingPosts() {
         const posts = [];
         
         for (const file of files) {
-            if (processingPosts.has(file.id)) {
-                console.log(`[DRIVE] Skipping post ${file.id} (processing)`);
-                continue;
-            }
-            
+            if (processingPosts.has(file.id)) continue;
             try {
                 const fileResponse = await axios.get(`${FILE_URL}/${file.id}?alt=media`, {
                     headers: { 'Authorization': `Bearer ${token}` },
@@ -415,27 +360,20 @@ async function loadPendingPosts() {
                     scheduledTime: new Date(postData.scheduledTime),
                     position: postData.position
                 });
-            } catch (e) {
-                console.error(`Failed to load ${file.id}:`, e.message);
-            }
+            } catch (e) {}
         }
         
         return posts.sort((a, b) => a.scheduledTime - b.scheduledTime);
-        
     } catch (error) {
         console.error('[DRIVE] ❌ Failed to load posts:', error.message);
         return [];
     }
 }
 
-// ===== FORWARDING FUNCTIONS =====
+// ===== FORMATTING FUNCTIONS =====
 async function generateThumbnail(buffer) {
     try {
-        const thumbnail = await sharp(buffer)
-            .resize(200, 200, { fit: 'inside' })
-            .jpeg({ quality: 70 })
-            .toBuffer();
-        return thumbnail;
+        return await sharp(buffer).resize(200, 200, { fit: 'inside' }).jpeg({ quality: 70 }).toBuffer();
     } catch (err) {
         return null;
     }
@@ -450,18 +388,12 @@ function cleanWhitespace(text) {
 
 function escapeHtml(text) {
     if (!text) return text;
-    return text
-        .replace(/&/g, '&amp;')
-        .replace(/</g, '&lt;')
-        .replace(/>/g, '&gt;');
+    return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
 
 function applyFormatting(text, entities) {
     if (!text) return '';
-    
-    if (!entities || entities.length === 0) {
-        return escapeHtml(text);
-    }
+    if (!entities || entities.length === 0) return escapeHtml(text);
     
     const sortedEntities = [...entities].sort((a, b) => {
         if (a.offset !== b.offset) return a.offset - b.offset;
@@ -480,7 +412,6 @@ function applyFormatting(text, entities) {
         }
         
         const entityEnd = entity.offset + entity.length;
-        
         const nestedEntities = [];
         let j = i + 1;
         while (j < sortedEntities.length) {
@@ -507,7 +438,6 @@ function applyFormatting(text, entities) {
         }
         
         let openTag = '', closeTag = '';
-        
         switch (entity.type) {
             case 'bold': openTag = '<b>'; closeTag = '</b>'; break;
             case 'italic': openTag = '<i>'; closeTag = '</i>'; break;
@@ -523,7 +453,6 @@ function applyFormatting(text, entities) {
         }
         
         result += openTag + entityContent + closeTag;
-        
         i += 1 + nestedEntities.length;
         lastIndex = entityEnd;
     }
@@ -543,7 +472,6 @@ function applyFormattingSimple(text, entities) {
     
     for (const entity of sortedEntities) {
         let openTag = '', closeTag = '';
-        
         switch (entity.type) {
             case 'bold': openTag = '<b>'; closeTag = '</b>'; break;
             case 'italic': openTag = '<i>'; closeTag = '</i>'; break;
@@ -560,7 +488,6 @@ function applyFormattingSimple(text, entities) {
         
         const start = entity.offset;
         const end = start + entity.length;
-        
         if (start < 0 || end > result.length || start >= end) continue;
         
         const content = result.substring(start, end);
@@ -631,188 +558,131 @@ function entitiesToWhatsApp(text, entities) {
     return cleanWhitespace(result);
 }
 
+// ===== FORWARDING FUNCTIONS =====
 async function sendToWhatsAppChannel(messageData) {
-    try {
-        if (!whatsappSock) return false;
+    if (!whatsappSock) return false;
+    if (messageData.type === 'text') {
+        await whatsappSock.sendMessage(WHATSAPP_CHANNEL, { text: messageData.content });
+    } else if (messageData.type === 'media' && messageData.buffer) {
+        const mediaBuffer = messageData.buffer;
+        const mediaCaption = messageData.caption || '';
+        let thumbnail = null;
+        if (messageData.mediaType === 'photo') thumbnail = await generateThumbnail(mediaBuffer);
         
-        if (messageData.type === 'text') {
-            await whatsappSock.sendMessage(WHATSAPP_CHANNEL, { text: messageData.content });
-        } else if (messageData.type === 'media' && messageData.buffer) {
-            const mediaBuffer = messageData.buffer;
-            const mediaCaption = messageData.caption || '';
-            
-            let thumbnail = null;
-            if (messageData.mediaType === 'photo') {
-                thumbnail = await generateThumbnail(mediaBuffer);
-            }
-            
-            const messageOptions = {
-                [messageData.mediaType === 'photo' ? 'image' : 
-                 messageData.mediaType === 'video' ? 'video' : 'document']: mediaBuffer,
-                caption: mediaCaption
-            };
-            
-            if (thumbnail && messageData.mediaType === 'photo') {
-                messageOptions.jpegThumbnail = thumbnail;
-            }
-            
-            await whatsappSock.sendMessage(WHATSAPP_CHANNEL, messageOptions);
-        }
-        return true;
-    } catch (error) {
-        console.error(`[WHATSAPP] ❌ Failed:`, error.message);
-        return false;
+        const messageOptions = {
+            [messageData.mediaType === 'photo' ? 'image' : messageData.mediaType === 'video' ? 'video' : 'document']: mediaBuffer,
+            caption: mediaCaption
+        };
+        if (thumbnail && messageData.mediaType === 'photo') messageOptions.jpegThumbnail = thumbnail;
+        await whatsappSock.sendMessage(WHATSAPP_CHANNEL, messageOptions);
     }
+    return true;
 }
 
 async function sendToTelegramChannel(messageData) {
-    try {
-        if (!sendBot) return false;
-        
-        if (messageData.type === 'text') {
-            const formattedText = applyFormatting(messageData.originalText, messageData.entities);
-            await sendBot.sendMessage(TELEGRAM_CHANNEL_ID, formattedText, {
-                parse_mode: 'HTML'
-            });
-        } else if (messageData.type === 'media' && messageData.buffer) {
-            const caption = messageData.originalCaption || '';
-            const formattedCaption = applyFormatting(caption, messageData.captionEntities);
-            
-            const mediaBuffer = messageData.buffer;
-            const ext = messageData.mediaType === 'photo' ? 'jpg' : 
-                       messageData.mediaType === 'video' ? 'mp4' : 'bin';
-            const tempFilePath = path.join(TEMP_DIR, `send_tg_${Date.now()}.${ext}`);
-            fs.writeFileSync(tempFilePath, mediaBuffer);
-            
-            try {
-                if (messageData.mediaType === 'photo') {
-                    await sendBot.sendPhoto(TELEGRAM_CHANNEL_ID, tempFilePath, {
-                        caption: formattedCaption,
-                        parse_mode: 'HTML'
-                    });
-                } else if (messageData.mediaType === 'video') {
-                    await sendBot.sendVideo(TELEGRAM_CHANNEL_ID, tempFilePath, {
-                        caption: formattedCaption,
-                        parse_mode: 'HTML'
-                    });
-                } else {
-                    await sendBot.sendDocument(TELEGRAM_CHANNEL_ID, tempFilePath, {
-                        caption: formattedCaption,
-                        parse_mode: 'HTML'
-                    });
-                }
-            } finally {
-                if (fs.existsSync(tempFilePath)) fs.unlinkSync(tempFilePath);
+    if (!sendBot) return false;
+    if (messageData.type === 'text') {
+        const formattedText = applyFormatting(messageData.originalText, messageData.entities);
+        await sendBot.sendMessage(TELEGRAM_CHANNEL_ID, formattedText, { parse_mode: 'HTML' });
+    } else if (messageData.type === 'media' && messageData.buffer) {
+        const caption = messageData.originalCaption || '';
+        const formattedCaption = applyFormatting(caption, messageData.captionEntities);
+        const mediaBuffer = messageData.buffer;
+        const ext = messageData.mediaType === 'photo' ? 'jpg' : messageData.mediaType === 'video' ? 'mp4' : 'bin';
+        const tempFilePath = path.join(TEMP_DIR, `send_tg_${Date.now()}.${ext}`);
+        fs.writeFileSync(tempFilePath, mediaBuffer);
+        try {
+            if (messageData.mediaType === 'photo') {
+                await sendBot.sendPhoto(TELEGRAM_CHANNEL_ID, tempFilePath, { caption: formattedCaption, parse_mode: 'HTML' });
+            } else if (messageData.mediaType === 'video') {
+                await sendBot.sendVideo(TELEGRAM_CHANNEL_ID, tempFilePath, { caption: formattedCaption, parse_mode: 'HTML' });
+            } else {
+                await sendBot.sendDocument(TELEGRAM_CHANNEL_ID, tempFilePath, { caption: formattedCaption, parse_mode: 'HTML' });
             }
+        } finally {
+            if (fs.existsSync(tempFilePath)) fs.unlinkSync(tempFilePath);
         }
-        return true;
-    } catch (error) {
-        console.error(`[TELEGRAM CHANNEL] ❌ Failed:`, error.message);
-        return false;
     }
+    return true;
 }
 
 async function sendToAllGroups(messageData) {
-    try {
-        if (!whatsappSock) return false;
-        
-        let successCount = 0;
-        
-        for (let i = 0; i < WHATSAPP_GROUPS.length; i++) {
-            const target = WHATSAPP_GROUPS[i];
-            try {
-                if (messageData.type === 'text') {
-                    await whatsappSock.sendMessage(target, { text: messageData.content });
-                    successCount++;
-                } else if (messageData.type === 'media' && messageData.buffer) {
-                    let thumbnail = null;
-                    if (messageData.mediaType === 'photo') {
-                        thumbnail = await generateThumbnail(messageData.buffer);
-                    }
-                    
-                    const messageOptions = {
-                        [messageData.mediaType === 'photo' ? 'image' : 
-                         messageData.mediaType === 'video' ? 'video' : 'document']: messageData.buffer,
-                        caption: messageData.caption || ''
-                    };
-                    
-                    if (thumbnail && messageData.mediaType === 'photo') {
-                        messageOptions.jpegThumbnail = thumbnail;
-                    }
-                    
-                    await whatsappSock.sendMessage(target, messageOptions);
-                    successCount++;
-                }
-                
-                if (i < WHATSAPP_GROUPS.length - 1) {
-                    await new Promise(resolve => setTimeout(resolve, RATE_LIMIT_DELAY));
-                }
-            } catch (err) {
-                console.error(`Failed to send to group ${i + 1}:`, err.message);
+    if (!whatsappSock) return false;
+    let successCount = 0;
+    for (let i = 0; i < WHATSAPP_GROUPS.length; i++) {
+        const target = WHATSAPP_GROUPS[i];
+        try {
+            if (messageData.type === 'text') {
+                await whatsappSock.sendMessage(target, { text: messageData.content });
+                successCount++;
+            } else if (messageData.type === 'media' && messageData.buffer) {
+                let thumbnail = null;
+                if (messageData.mediaType === 'photo') thumbnail = await generateThumbnail(messageData.buffer);
+                const messageOptions = {
+                    [messageData.mediaType === 'photo' ? 'image' : messageData.mediaType === 'video' ? 'video' : 'document']: messageData.buffer,
+                    caption: messageData.caption || ''
+                };
+                if (thumbnail && messageData.mediaType === 'photo') messageOptions.jpegThumbnail = thumbnail;
+                await whatsappSock.sendMessage(target, messageOptions);
+                successCount++;
             }
-        }
-        
-        return successCount > 0;
-    } catch (error) {
-        console.error(`[WHATSAPP GROUPS] ❌ Failed:`, error.message);
-        return false;
+            if (i < WHATSAPP_GROUPS.length - 1) await new Promise(resolve => setTimeout(resolve, RATE_LIMIT_DELAY));
+        } catch (err) {}
     }
+    return successCount > 0;
 }
 
 async function sendToOwnChat(messageData) {
-    try {
-        if (!whatsappSock) return false;
-        
-        const jid = WHATSAPP_NUMBER.includes('@') ? WHATSAPP_NUMBER : `${WHATSAPP_NUMBER}@s.whatsapp.net`;
-        
-        if (messageData.type === 'text') {
-            await whatsappSock.sendMessage(jid, { text: messageData.content });
-        } else if (messageData.type === 'media' && messageData.buffer) {
-            let thumbnail = null;
-            if (messageData.mediaType === 'photo') {
-                thumbnail = await generateThumbnail(messageData.buffer);
-            }
-            
-            const messageOptions = {
-                [messageData.mediaType === 'photo' ? 'image' : 
-                 messageData.mediaType === 'video' ? 'video' : 'document']: messageData.buffer,
-                caption: messageData.caption || ''
-            };
-            
-            if (thumbnail && messageData.mediaType === 'photo') {
-                messageOptions.jpegThumbnail = thumbnail;
-            }
-            
-            await whatsappSock.sendMessage(jid, messageOptions);
-        }
-        return true;
-    } catch (error) {
-        console.error(`[WHATSAPP OWN] ❌ Failed:`, error.message);
-        return false;
+    if (!whatsappSock) return false;
+    const jid = WHATSAPP_NUMBER.includes('@') ? WHATSAPP_NUMBER : `${WHATSAPP_NUMBER}@s.whatsapp.net`;
+    if (messageData.type === 'text') {
+        await whatsappSock.sendMessage(jid, { text: messageData.content });
+    } else if (messageData.type === 'media' && messageData.buffer) {
+        let thumbnail = null;
+        if (messageData.mediaType === 'photo') thumbnail = await generateThumbnail(messageData.buffer);
+        const messageOptions = {
+            [messageData.mediaType === 'photo' ? 'image' : messageData.mediaType === 'video' ? 'video' : 'document']: messageData.buffer,
+            caption: messageData.caption || ''
+        };
+        if (thumbnail && messageData.mediaType === 'photo') messageOptions.jpegThumbnail = thumbnail;
+        await whatsappSock.sendMessage(jid, messageOptions);
     }
+    return true;
 }
 
 async function sendToAllDestinations(messageData) {
     let allSuccess = true;
-    
     if (!await sendToWhatsAppChannel(messageData)) allSuccess = false;
     await new Promise(resolve => setTimeout(resolve, 2000));
-    
     if (!await sendToTelegramChannel(messageData)) allSuccess = false;
     await new Promise(resolve => setTimeout(resolve, 2000));
-    
     if (!await sendToAllGroups(messageData)) allSuccess = false;
     await new Promise(resolve => setTimeout(resolve, 2000));
-    
     if (!await sendToOwnChat(messageData)) allSuccess = false;
-    
     return allSuccess;
+}
+
+async function sendToOwnChatScheduled(messageData) {
+    // Just send to own chat (no scheduling yet - for testing)
+    if (!whatsappSock) return false;
+    const jid = WHATSAPP_NUMBER.includes('@') ? WHATSAPP_NUMBER : `${WHATSAPP_NUMBER}@s.whatsapp.net`;
+    if (messageData.type === 'text') {
+        await whatsappSock.sendMessage(jid, { text: messageData.content });
+    } else if (messageData.type === 'media' && messageData.buffer) {
+        let thumbnail = null;
+        if (messageData.mediaType === 'photo') thumbnail = await generateThumbnail(messageData.buffer);
+        const messageOptions = {
+            [messageData.mediaType === 'photo' ? 'image' : messageData.mediaType === 'video' ? 'video' : 'document']: messageData.buffer,
+            caption: messageData.caption || ''
+        };
+        if (thumbnail && messageData.mediaType === 'photo') messageOptions.jpegThumbnail = thumbnail;
+        await whatsappSock.sendMessage(jid, messageOptions);
+    }
+    return true;
 }
 
 // ===== SCHEDULER FUNCTIONS =====
 async function sendPost(postData) {
-    console.log(`[SCHEDULER] 📤 Sending post #${postData.position}...`);
-    
     const messageData = {
         type: postData.type,
         content: postData.content,
@@ -830,94 +700,47 @@ async function sendPost(postData) {
         messageData.originalCaption = postData.originalCaption;
         messageData.captionEntities = postData.captionEntities;
         messageData.buffer = postData.buffer;
-        
-        if (!messageData.buffer || messageData.buffer.length === 0) {
-            console.error(`[SCHEDULER] ❌ No media buffer for post #${postData.position}!`);
-            return false;
-        }
+        if (!messageData.buffer || messageData.buffer.length === 0) return false;
     }
     
-    return await sendToAllDestinations(messageData);
+    // For now, only send to own chat for testing
+    return await sendToOwnChatScheduled(messageData);
 }
 
 async function processQueue() {
     const posts = await loadPendingPosts();
-    
     if (posts.length === 0) {
-        console.log('[SCHEDULER] No pending posts');
         scheduledTask = null;
         return;
     }
     
     const now = getPakistanTime();
     const nextPost = posts[0];
-    
-    console.log(`[SCHEDULER] Next post #${nextPost.position} scheduled for: ${formatPakistanTime(nextPost.scheduledTime)}`);
-    console.log(`[SCHEDULER] Current time: ${formatPakistanTime(now)}`);
-    
     const timeDiff = now - nextPost.scheduledTime;
     
     if (nextPost.scheduledTime > now) {
         const delay = nextPost.scheduledTime - now;
-        console.log(`[SCHEDULER] Waiting ${Math.floor(delay / 1000 / 60)} minutes`);
         scheduledTask = setTimeout(processQueue, delay);
         return;
     }
     
     if (timeDiff > MISSED_POST_WINDOW_MS) {
-        console.log(`[SCHEDULER] ⚠️ Post #${nextPost.position} is ${Math.floor(timeDiff / 1000 / 60)} minutes old - DELETING`);
         if (nextPost.data.mediaFileId) await deleteMediaFromDrive(nextPost.data.mediaFileId);
         await deletePostFromDrive(nextPost.id);
         setImmediate(processQueue);
         return;
     }
     
-    console.log(`[SCHEDULER] 📤 Sending post #${nextPost.position}`);
     processingPosts.add(nextPost.id);
-    
     const loadedPost = await loadPostFromDrive(nextPost.id);
     
     if (loadedPost) {
         const success = await sendPost(loadedPost);
-        
         if (success) {
             if (loadedPost.mediaFileId) await deleteMediaFromDrive(loadedPost.mediaFileId);
             await deletePostFromDrive(nextPost.id);
             lastSendTime = now;
             await saveScheduleToDrive();
-            console.log(`[SCHEDULER] ✅ Post #${nextPost.position} sent`);
-            
-            // Update remaining posts
-            const remaining = await loadPendingPosts();
-            if (remaining.length > 0) {
-                let currentTime = now;
-                for (const post of remaining) {
-                    let newTime = addRandomHours(currentTime);
-                    const newHour = newTime.getHours();
-                    if (newHour >= NIGHT_START_HOUR || newHour < NIGHT_END_HOUR) {
-                        const morningTime = new Date(newTime);
-                        morningTime.setHours(NIGHT_END_HOUR, 0, 0, 0);
-                        if (morningTime <= newTime) morningTime.setDate(morningTime.getDate() + 1);
-                        newTime = morningTime;
-                    }
-                    
-                    const token = await getDriveToken();
-                    const updatedData = { ...post.data, scheduledTime: newTime.toISOString() };
-                    const tempFile = path.join(TEMP_DIR, `update_${Date.now()}.json`);
-                    fs.writeFileSync(tempFile, JSON.stringify(updatedData, null, 2));
-                    
-                    const formData = new FormData();
-                    formData.append('metadata', JSON.stringify({ name: post.id }), { contentType: 'application/json' });
-                    formData.append('file', fs.createReadStream(tempFile));
-                    
-                    await axios.patch(`${FILE_URL}/${post.id}?uploadType=multipart`, formData, {
-                        headers: { 'Authorization': `Bearer ${token}`, ...formData.getHeaders() }
-                    });
-                    
-                    fs.unlinkSync(tempFile);
-                    currentTime = newTime;
-                }
-            }
         }
     }
     
@@ -928,21 +751,18 @@ async function processQueue() {
 async function queuePost(messageData, uniqueId) {
     const posts = await loadPendingPosts();
     const position = posts.length + 1;
-    
     let scheduledTime;
     let mediaFileId = null;
     let mediaBuffer = null;
     
     if (messageData.type === 'media' && messageData.buffer && messageData.buffer.length > 0) {
         mediaBuffer = messageData.buffer;
-        const ext = messageData.mediaType === 'photo' ? 'jpg' : 
-                    messageData.mediaType === 'video' ? 'mp4' : 'bin';
+        const ext = messageData.mediaType === 'photo' ? 'jpg' : messageData.mediaType === 'video' ? 'mp4' : 'bin';
         mediaFileId = await saveMediaToDrive(mediaBuffer, messageData.mimeType, ext);
     }
     
     if (posts.length === 0 && !lastSendTime) {
         scheduledTime = getPakistanTime();
-        console.log(`[QUEUE] Post #${position} - SENDING NOW`);
     } else {
         let lastTime;
         if (posts.length > 0) {
@@ -952,9 +772,7 @@ async function queuePost(messageData, uniqueId) {
         } else {
             lastTime = getPakistanTime();
         }
-        
         scheduledTime = addRandomHours(lastTime);
-        
         const scheduledHour = scheduledTime.getHours();
         if (scheduledHour >= NIGHT_START_HOUR || scheduledHour < NIGHT_END_HOUR) {
             const morningTime = new Date(scheduledTime);
@@ -962,27 +780,20 @@ async function queuePost(messageData, uniqueId) {
             if (morningTime <= scheduledTime) morningTime.setDate(morningTime.getDate() + 1);
             scheduledTime = morningTime;
         }
-        
-        console.log(`[QUEUE] Post #${position} - Scheduled for ${formatPakistanTime(scheduledTime)}`);
     }
     
     const postId = await savePostToDrive(messageData, uniqueId, scheduledTime, position, mediaFileId);
-    
     const now = getPakistanTime();
     const isImmediate = scheduledTime <= now;
     
     if (isImmediate && mediaBuffer) {
-        console.log(`[QUEUE] Sending immediate post #${position}`);
-        
         messageData.buffer = mediaBuffer;
-        const success = await sendToAllDestinations(messageData);
-        
+        const success = await sendToOwnChatScheduled(messageData);
         if (success) {
             if (mediaFileId) await deleteMediaFromDrive(mediaFileId);
             await deletePostFromDrive(postId);
             lastSendTime = now;
             await saveScheduleToDrive();
-            console.log(`[QUEUE] ✅ Immediate post #${position} sent`);
             return { scheduledTime, position, sent: true };
         }
     }
@@ -991,11 +802,8 @@ async function queuePost(messageData, uniqueId) {
         const nextPosts = await loadPendingPosts();
         if (nextPosts.length > 0) {
             const delay = Math.max(0, nextPosts[0].scheduledTime - now);
-            if (delay > 0) {
-                scheduledTask = setTimeout(processQueue, delay);
-            } else {
-                processQueue();
-            }
+            if (delay > 0) scheduledTask = setTimeout(processQueue, delay);
+            else processQueue();
         }
     }
     
@@ -1008,13 +816,10 @@ function initTelegramBot() {
     telegrafBot = new Telegraf(TELEGRAM_BOT_TOKEN);
     
     console.log('🤖 Telegram Bot Started!');
-    console.log(`📢 Forwarding to channel: ${TELEGRAM_CHANNEL_ID}`);
     console.log(`👥 Groups: ${WHATSAPP_GROUPS.length} groups configured`);
-    console.log(`📺 WhatsApp Channel: ${WHATSAPP_CHANNEL}`);
     console.log(`📁 Posts Folder: ${POSTS_FOLDER_ID}`);
     console.log(`📁 Media Folder: ${MEDIA_FOLDER_ID}`);
     console.log(`⏰ Random delay: ${MIN_DELAY_HOURS}-${MAX_DELAY_HOURS} hours`);
-    console.log(`🌙 Night pause: ${NIGHT_START_HOUR}:00 - ${NIGHT_END_HOUR}:00 PKT`);
     console.log(`🕐 Current PKT: ${formatPakistanTime()}\n`);
     
     telegrafBot.command('start', (ctx) => {
@@ -1025,8 +830,7 @@ function initTelegramBot() {
             `• 📺 *WhatsApp Channel* - Send to WhatsApp channel\n` +
             `• 🌐 *Telegram Channel* - Send to Telegram channel\n` +
             `• 👥 *ALL GROUPS* - Send to ${WHATSAPP_GROUPS.length} groups\n` +
-            `• 📱 *Own Chat* - Send only to your WhatsApp\n` +
-            `• 🌟 *ALL* - ⏰ **SCHEDULED** (${MIN_DELAY_HOURS}-${MAX_DELAY_HOURS}h delay)\n` +
+            `• 📱 *Own Chat* - ⏰ **SCHEDULED** (${MIN_DELAY_HOURS}-${MAX_DELAY_HOURS}h delay, only to your WhatsApp)\n` +
             `• ❌ *Cancel*\n\n` +
             `*Commands:*\n` +
             `• /queue - Check queue status\n` +
@@ -1045,25 +849,12 @@ function initTelegramBot() {
         ctx.reply(`🕐 *Pakistan Time:* ${formatPakistanTime()}\n🌙 *Night Mode:* ${isNightTime() ? 'ACTIVE' : 'INACTIVE'}`, { parse_mode: 'Markdown' });
     });
     
-    telegrafBot.command('schedule', async (ctx) => {
-        const posts = await loadPendingPosts();
-        if (posts.length === 0) {
-            await ctx.reply('📭 No posts scheduled.');
-            return;
-        }
-        
-        let msg = `⏰ *Schedule Status*\n\n📊 *Total queued:* ${posts.length}\n`;
-        msg += `⏱️ *Next post #${posts[0].position}:* ${formatPakistanTime(posts[0].scheduledTime)}\n`;
-        await ctx.reply(msg, { parse_mode: 'Markdown' });
-    });
-    
     telegrafBot.command('queue', async (ctx) => {
         const posts = await loadPendingPosts();
         if (posts.length === 0) {
             await ctx.reply('📭 No posts in queue.');
             return;
         }
-        
         let msg = `📋 *Queue Status*\n\n📊 *Total queued:* ${posts.length}\n🕐 *Current PKT:* ${formatPakistanTime()}\n\n*Scheduled times:*\n`;
         for (let i = 0; i < Math.min(posts.length, 10); i++) {
             msg += `${i + 1}. Post #${posts[i].position}: ${formatPakistanTime(posts[i].scheduledTime)}\n`;
@@ -1074,16 +865,7 @@ function initTelegramBot() {
     telegrafBot.on('text', async (ctx) => {
         const originalText = ctx.message.text;
         const entities = ctx.message.entities || [];
-        
-        console.log(`\n[TELEGRAM] 📝 Text received at ${formatPakistanTime()}`);
-        
-        const simpleEntities = entities.map(e => ({
-            type: e.type,
-            offset: e.offset,
-            length: e.length,
-            url: e.url
-        }));
-        
+        const simpleEntities = entities.map(e => ({ type: e.type, offset: e.offset, length: e.length, url: e.url }));
         const formattedForWhatsApp = entitiesToWhatsApp(originalText, simpleEntities);
         const uniqueId = `${ctx.chat.id}_${Date.now()}_${Math.random().toString(36).substr(2, 6)}`;
         
@@ -1103,8 +885,7 @@ function initTelegramBot() {
                         [{ text: `📺 WhatsApp Channel`, callback_data: `${uniqueId}_channel` }],
                         [{ text: `🌐 Telegram Channel`, callback_data: `${uniqueId}_telegram` }],
                         [{ text: `👥 ALL GROUPS (${WHATSAPP_GROUPS.length})`, callback_data: `${uniqueId}_groups` }],
-                        [{ text: `📱 Own Chat`, callback_data: `${uniqueId}_own` }],
-                        [{ text: `⏰🌟 SCHEDULED (${MIN_DELAY_HOURS}-${MAX_DELAY_HOURS}h)`, callback_data: `${uniqueId}_all` }],
+                        [{ text: `⏰📱 SCHEDULED (Own Chat, ${MIN_DELAY_HOURS}-${MAX_DELAY_HOURS}h)`, callback_data: `${uniqueId}_own` }],
                         [{ text: `❌ Cancel`, callback_data: `${uniqueId}_cancel` }]
                     ]
                 }
@@ -1117,20 +898,11 @@ function initTelegramBot() {
         const entities = ctx.message.caption_entities || [];
         const photo = ctx.message.photo[ctx.message.photo.length - 1];
         
-        console.log(`\n[TELEGRAM] 📸 Photo received at ${formatPakistanTime()}`);
-        
         try {
             const fileLink = await ctx.telegram.getFileLink(photo.file_id);
             const response = await axios.get(fileLink, { responseType: 'arraybuffer' });
             const buffer = Buffer.from(response.data);
-            
-            const simpleEntities = entities.map(e => ({
-                type: e.type,
-                offset: e.offset,
-                length: e.length,
-                url: e.url
-            }));
-            
+            const simpleEntities = entities.map(e => ({ type: e.type, offset: e.offset, length: e.length, url: e.url }));
             const formattedCaption = entitiesToWhatsApp(caption, simpleEntities);
             const uniqueId = `${ctx.chat.id}_${Date.now()}_${Math.random().toString(36).substr(2, 6)}`;
             
@@ -1153,8 +925,7 @@ function initTelegramBot() {
                             [{ text: `📺 WhatsApp Channel`, callback_data: `${uniqueId}_channel` }],
                             [{ text: `🌐 Telegram Channel`, callback_data: `${uniqueId}_telegram` }],
                             [{ text: `👥 ALL GROUPS (${WHATSAPP_GROUPS.length})`, callback_data: `${uniqueId}_groups` }],
-                            [{ text: `📱 Own Chat`, callback_data: `${uniqueId}_own` }],
-                            [{ text: `⏰🌟 SCHEDULED (${MIN_DELAY_HOURS}-${MAX_DELAY_HOURS}h)`, callback_data: `${uniqueId}_all` }],
+                            [{ text: `⏰📱 SCHEDULED (Own Chat, ${MIN_DELAY_HOURS}-${MAX_DELAY_HOURS}h)`, callback_data: `${uniqueId}_own` }],
                             [{ text: `❌ Cancel`, callback_data: `${uniqueId}_cancel` }]
                         ]
                     }
@@ -1171,20 +942,11 @@ function initTelegramBot() {
         const entities = ctx.message.caption_entities || [];
         const video = ctx.message.video;
         
-        console.log(`\n[TELEGRAM] 🎥 Video received at ${formatPakistanTime()}`);
-        
         try {
             const fileLink = await ctx.telegram.getFileLink(video.file_id);
             const response = await axios.get(fileLink, { responseType: 'arraybuffer' });
             const buffer = Buffer.from(response.data);
-            
-            const simpleEntities = entities.map(e => ({
-                type: e.type,
-                offset: e.offset,
-                length: e.length,
-                url: e.url
-            }));
-            
+            const simpleEntities = entities.map(e => ({ type: e.type, offset: e.offset, length: e.length, url: e.url }));
             const formattedCaption = entitiesToWhatsApp(caption, simpleEntities);
             const uniqueId = `${ctx.chat.id}_${Date.now()}_${Math.random().toString(36).substr(2, 6)}`;
             
@@ -1207,8 +969,7 @@ function initTelegramBot() {
                             [{ text: `📺 WhatsApp Channel`, callback_data: `${uniqueId}_channel` }],
                             [{ text: `🌐 Telegram Channel`, callback_data: `${uniqueId}_telegram` }],
                             [{ text: `👥 ALL GROUPS (${WHATSAPP_GROUPS.length})`, callback_data: `${uniqueId}_groups` }],
-                            [{ text: `📱 Own Chat`, callback_data: `${uniqueId}_own` }],
-                            [{ text: `⏰🌟 SCHEDULED (${MIN_DELAY_HOURS}-${MAX_DELAY_HOURS}h)`, callback_data: `${uniqueId}_all` }],
+                            [{ text: `⏰📱 SCHEDULED (Own Chat, ${MIN_DELAY_HOURS}-${MAX_DELAY_HOURS}h)`, callback_data: `${uniqueId}_own` }],
                             [{ text: `❌ Cancel`, callback_data: `${uniqueId}_cancel` }]
                         ]
                     }
@@ -1220,6 +981,7 @@ function initTelegramBot() {
         }
     });
     
+    // IMPORTANT: Callback handler - responds IMMEDIATELY, then processes in background
     telegrafBot.action(/.+/, async (ctx) => {
         const callbackData = ctx.callbackQuery.data;
         const parts = callbackData.split('_');
@@ -1234,13 +996,37 @@ function initTelegramBot() {
             return;
         }
         
-        await ctx.answerCbQuery('⏳ Processing...');
+        // Delete from pending immediately
         pendingMessages.delete(uniqueId);
         
         if (target === 'cancel') {
+            await ctx.answerCbQuery('Cancelled');
             await ctx.editMessageText('❌ Cancelled.');
             return;
         }
+        
+        // For scheduled posts (own chat with delay)
+        if (target === 'own') {
+            // Answer callback immediately to prevent timeout
+            await ctx.answerCbQuery('⏰ Scheduling post...');
+            await ctx.editMessageText('⏰ *Post is being scheduled...*\n\nI will send it to your WhatsApp at the scheduled time.', { parse_mode: 'Markdown' });
+            
+            // Process in background (no await - let it run async)
+            queuePost(messageData, uniqueId).then(({ position, sent }) => {
+                if (sent) {
+                    ctx.telegram.sendMessage(ctx.chat.id, `✅ *Post #${position} sent immediately to your WhatsApp!*`, { parse_mode: 'Markdown' });
+                } else {
+                    ctx.telegram.sendMessage(ctx.chat.id, `⏰ *Post #${position} scheduled!*\n\nIt will be sent to your WhatsApp at the scheduled time.`, { parse_mode: 'Markdown' });
+                }
+            }).catch(err => {
+                console.error('Background processing error:', err);
+                ctx.telegram.sendMessage(ctx.chat.id, '❌ Failed to schedule post.');
+            });
+            return;
+        }
+        
+        // For immediate actions (channel, telegram, groups)
+        await ctx.answerCbQuery('⏳ Processing...');
         
         let success = false;
         let targetText = '';
@@ -1254,17 +1040,6 @@ function initTelegramBot() {
         } else if (target === 'groups') {
             success = await sendToAllGroups(messageData);
             targetText = `${WHATSAPP_GROUPS.length} groups`;
-        } else if (target === 'own') {
-            success = await sendToOwnChat(messageData);
-            targetText = 'your chat';
-        } else if (target === 'all') {
-            const { position, sent } = await queuePost(messageData, uniqueId);
-            if (sent) {
-                await ctx.editMessageText(`✅ *Post #${position} Sent!*`, { parse_mode: 'Markdown' });
-            } else {
-                await ctx.editMessageText(`⏰ *Post #${position} Scheduled!*\n\n📋 *Total in queue:* ${position}`, { parse_mode: 'Markdown' });
-            }
-            return;
         }
         
         if (success) {
@@ -1275,6 +1050,34 @@ function initTelegramBot() {
     });
     
     telegrafBot.launch();
+}
+
+async function forceSendNextPost() {
+    const posts = await loadPendingPosts();
+    if (posts.length === 0) return { success: false, message: "No posts in queue" };
+    
+    const nextPost = posts[0];
+    processingPosts.add(nextPost.id);
+    const loadedPost = await loadPostFromDrive(nextPost.id);
+    
+    if (!loadedPost) {
+        processingPosts.delete(nextPost.id);
+        return { success: false, message: "Failed to load post" };
+    }
+    
+    const success = await sendPost(loadedPost);
+    
+    if (success) {
+        if (loadedPost.mediaFileId) await deleteMediaFromDrive(loadedPost.mediaFileId);
+        await deletePostFromDrive(nextPost.id);
+        lastSendTime = getPakistanTime();
+        await saveScheduleToDrive();
+        processingPosts.delete(nextPost.id);
+        return { success: true, message: `Post #${nextPost.position} sent` };
+    }
+    
+    processingPosts.delete(nextPost.id);
+    return { success: false, message: "Failed to send" };
 }
 
 // ===== WHATSAPP BOT =====
@@ -1347,43 +1150,12 @@ async function loadExistingData() {
         const now = getPakistanTime();
         const nextPost = posts[0];
         const delay = Math.max(0, nextPost.scheduledTime - now);
-        console.log(`[STARTUP] Next post at: ${formatPakistanTime(nextPost.scheduledTime)}`);
         if (delay > 0) {
             scheduledTask = setTimeout(processQueue, delay);
         } else {
             processQueue();
         }
     }
-}
-
-async function forceSendNextPost() {
-    const posts = await loadPendingPosts();
-    if (posts.length === 0) return { success: false, message: "No posts in queue" };
-    
-    const nextPost = posts[0];
-    console.log(`[FORCE] Sending post #${nextPost.position}`);
-    
-    processingPosts.add(nextPost.id);
-    const loadedPost = await loadPostFromDrive(nextPost.id);
-    
-    if (!loadedPost) {
-        processingPosts.delete(nextPost.id);
-        return { success: false, message: "Failed to load post" };
-    }
-    
-    const success = await sendPost(loadedPost);
-    
-    if (success) {
-        if (loadedPost.mediaFileId) await deleteMediaFromDrive(loadedPost.mediaFileId);
-        await deletePostFromDrive(nextPost.id);
-        lastSendTime = getPakistanTime();
-        await saveScheduleToDrive();
-        processingPosts.delete(nextPost.id);
-        return { success: true, message: `Post #${nextPost.position} sent` };
-    }
-    
-    processingPosts.delete(nextPost.id);
-    return { success: false, message: "Failed to send" };
 }
 
 process.on('SIGINT', async () => {
