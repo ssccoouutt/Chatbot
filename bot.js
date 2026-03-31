@@ -155,9 +155,12 @@ async function getDriveToken() {
 async function saveScheduleToDrive() {
     try {
         const token = await getDriveToken();
-        const scheduleData = { lastSendTime: lastSendTime ? lastSendTime.toISOString() : null };
+        const scheduleData = { 
+            lastSendTime: lastSendTime ? lastSendTime.toISOString() : null 
+        };
+        const fileContent = JSON.stringify(scheduleData, null, 2);
         const tempFile = path.join(TEMP_DIR, SCHEDULE_FILE);
-        fs.writeFileSync(tempFile, JSON.stringify(scheduleData, null, 2));
+        fs.writeFileSync(tempFile, fileContent);
         
         let fileId = null;
         try {
@@ -170,14 +173,16 @@ async function saveScheduleToDrive() {
         } catch (e) {}
         
         const formData = new FormData();
-        formData.append('metadata', JSON.stringify({ name: SCHEDULE_FILE, parents: [POSTS_FOLDER_ID] }), { contentType: 'application/json' });
-        formData.append('file', fs.createReadStream(tempFile));
         
         if (fileId) {
+            formData.append('metadata', JSON.stringify({ name: SCHEDULE_FILE }), { contentType: 'application/json' });
+            formData.append('file', fs.createReadStream(tempFile));
             await axios.patch(`${FILE_URL}/${fileId}?uploadType=multipart`, formData, {
                 headers: { 'Authorization': `Bearer ${token}`, ...formData.getHeaders() }
             });
         } else {
+            formData.append('metadata', JSON.stringify({ name: SCHEDULE_FILE, parents: [POSTS_FOLDER_ID] }), { contentType: 'application/json' });
+            formData.append('file', fs.createReadStream(tempFile));
             await axios.post(UPLOAD_URL, formData, {
                 headers: { 'Authorization': `Bearer ${token}`, ...formData.getHeaders() }
             });
@@ -186,7 +191,11 @@ async function saveScheduleToDrive() {
         fs.unlinkSync(tempFile);
         console.log('[DRIVE] ✅ Schedule saved');
     } catch (error) {
-        console.error('[DRIVE] ❌ Failed to save schedule:', error.message);
+        console.error('[DRIVE] ⚠️ Failed to save schedule (non-critical):', error.message);
+        try {
+            const tempFile = path.join(TEMP_DIR, SCHEDULE_FILE);
+            if (fs.existsSync(tempFile)) fs.unlinkSync(tempFile);
+        } catch (e) {}
     }
 }
 
@@ -206,9 +215,13 @@ async function loadScheduleFromDrive() {
             const scheduleData = JSON.parse(response.data);
             lastSendTime = scheduleData.lastSendTime ? new Date(scheduleData.lastSendTime) : null;
             console.log(`[DRIVE] ✅ Schedule loaded - Last send: ${lastSendTime ? formatPakistanTime(lastSendTime) : 'Never'}`);
+        } else {
+            console.log('[DRIVE] No schedule file found, starting fresh');
+            lastSendTime = null;
         }
     } catch (error) {
-        console.log('[DRIVE] No existing schedule found');
+        console.log('[DRIVE] No schedule found, starting fresh');
+        lastSendTime = null;
     }
 }
 
@@ -662,25 +675,6 @@ async function sendToAllDestinations(messageData) {
     return allSuccess;
 }
 
-async function sendToOwnChatScheduled(messageData) {
-    // Just send to own chat (no scheduling yet - for testing)
-    if (!whatsappSock) return false;
-    const jid = WHATSAPP_NUMBER.includes('@') ? WHATSAPP_NUMBER : `${WHATSAPP_NUMBER}@s.whatsapp.net`;
-    if (messageData.type === 'text') {
-        await whatsappSock.sendMessage(jid, { text: messageData.content });
-    } else if (messageData.type === 'media' && messageData.buffer) {
-        let thumbnail = null;
-        if (messageData.mediaType === 'photo') thumbnail = await generateThumbnail(messageData.buffer);
-        const messageOptions = {
-            [messageData.mediaType === 'photo' ? 'image' : messageData.mediaType === 'video' ? 'video' : 'document']: messageData.buffer,
-            caption: messageData.caption || ''
-        };
-        if (thumbnail && messageData.mediaType === 'photo') messageOptions.jpegThumbnail = thumbnail;
-        await whatsappSock.sendMessage(jid, messageOptions);
-    }
-    return true;
-}
-
 // ===== SCHEDULER FUNCTIONS =====
 async function sendPost(postData) {
     const messageData = {
@@ -703,8 +697,7 @@ async function sendPost(postData) {
         if (!messageData.buffer || messageData.buffer.length === 0) return false;
     }
     
-    // For now, only send to own chat for testing
-    return await sendToOwnChatScheduled(messageData);
+    return await sendToAllDestinations(messageData);
 }
 
 async function processQueue() {
@@ -788,7 +781,7 @@ async function queuePost(messageData, uniqueId) {
     
     if (isImmediate && mediaBuffer) {
         messageData.buffer = mediaBuffer;
-        const success = await sendToOwnChatScheduled(messageData);
+        const success = await sendToAllDestinations(messageData);
         if (success) {
             if (mediaFileId) await deleteMediaFromDrive(mediaFileId);
             await deletePostFromDrive(postId);
@@ -808,6 +801,34 @@ async function queuePost(messageData, uniqueId) {
     }
     
     return { scheduledTime, position, sent: false };
+}
+
+async function forceSendNextPost() {
+    const posts = await loadPendingPosts();
+    if (posts.length === 0) return { success: false, message: "No posts in queue" };
+    
+    const nextPost = posts[0];
+    processingPosts.add(nextPost.id);
+    const loadedPost = await loadPostFromDrive(nextPost.id);
+    
+    if (!loadedPost) {
+        processingPosts.delete(nextPost.id);
+        return { success: false, message: "Failed to load post" };
+    }
+    
+    const success = await sendPost(loadedPost);
+    
+    if (success) {
+        if (loadedPost.mediaFileId) await deleteMediaFromDrive(loadedPost.mediaFileId);
+        await deletePostFromDrive(nextPost.id);
+        lastSendTime = getPakistanTime();
+        await saveScheduleToDrive();
+        processingPosts.delete(nextPost.id);
+        return { success: true, message: `Post #${nextPost.position} sent` };
+    }
+    
+    processingPosts.delete(nextPost.id);
+    return { success: false, message: "Failed to send" };
 }
 
 // ===== TELEGRAM BOT HANDLER =====
@@ -830,7 +851,8 @@ function initTelegramBot() {
             `• 📺 *WhatsApp Channel* - Send to WhatsApp channel\n` +
             `• 🌐 *Telegram Channel* - Send to Telegram channel\n` +
             `• 👥 *ALL GROUPS* - Send to ${WHATSAPP_GROUPS.length} groups\n` +
-            `• 📱 *Own Chat* - ⏰ **SCHEDULED** (${MIN_DELAY_HOURS}-${MAX_DELAY_HOURS}h delay, only to your WhatsApp)\n` +
+            `• 📱 *Own Chat* - Send only to your WhatsApp\n` +
+            `• 🌟 *ALL DESTINATIONS* - ⏰ **SCHEDULED** (${MIN_DELAY_HOURS}-${MAX_DELAY_HOURS}h delay to all)\n` +
             `• ❌ *Cancel*\n\n` +
             `*Commands:*\n` +
             `• /queue - Check queue status\n` +
@@ -885,7 +907,8 @@ function initTelegramBot() {
                         [{ text: `📺 WhatsApp Channel`, callback_data: `${uniqueId}_channel` }],
                         [{ text: `🌐 Telegram Channel`, callback_data: `${uniqueId}_telegram` }],
                         [{ text: `👥 ALL GROUPS (${WHATSAPP_GROUPS.length})`, callback_data: `${uniqueId}_groups` }],
-                        [{ text: `⏰📱 SCHEDULED (Own Chat, ${MIN_DELAY_HOURS}-${MAX_DELAY_HOURS}h)`, callback_data: `${uniqueId}_own` }],
+                        [{ text: `📱 Own Chat`, callback_data: `${uniqueId}_own` }],
+                        [{ text: `🌟 ALL DESTINATIONS (${MIN_DELAY_HOURS}-${MAX_DELAY_HOURS}h)`, callback_data: `${uniqueId}_all` }],
                         [{ text: `❌ Cancel`, callback_data: `${uniqueId}_cancel` }]
                     ]
                 }
@@ -925,7 +948,8 @@ function initTelegramBot() {
                             [{ text: `📺 WhatsApp Channel`, callback_data: `${uniqueId}_channel` }],
                             [{ text: `🌐 Telegram Channel`, callback_data: `${uniqueId}_telegram` }],
                             [{ text: `👥 ALL GROUPS (${WHATSAPP_GROUPS.length})`, callback_data: `${uniqueId}_groups` }],
-                            [{ text: `⏰📱 SCHEDULED (Own Chat, ${MIN_DELAY_HOURS}-${MAX_DELAY_HOURS}h)`, callback_data: `${uniqueId}_own` }],
+                            [{ text: `📱 Own Chat`, callback_data: `${uniqueId}_own` }],
+                            [{ text: `🌟 ALL DESTINATIONS (${MIN_DELAY_HOURS}-${MAX_DELAY_HOURS}h)`, callback_data: `${uniqueId}_all` }],
                             [{ text: `❌ Cancel`, callback_data: `${uniqueId}_cancel` }]
                         ]
                     }
@@ -969,7 +993,8 @@ function initTelegramBot() {
                             [{ text: `📺 WhatsApp Channel`, callback_data: `${uniqueId}_channel` }],
                             [{ text: `🌐 Telegram Channel`, callback_data: `${uniqueId}_telegram` }],
                             [{ text: `👥 ALL GROUPS (${WHATSAPP_GROUPS.length})`, callback_data: `${uniqueId}_groups` }],
-                            [{ text: `⏰📱 SCHEDULED (Own Chat, ${MIN_DELAY_HOURS}-${MAX_DELAY_HOURS}h)`, callback_data: `${uniqueId}_own` }],
+                            [{ text: `📱 Own Chat`, callback_data: `${uniqueId}_own` }],
+                            [{ text: `🌟 ALL DESTINATIONS (${MIN_DELAY_HOURS}-${MAX_DELAY_HOURS}h)`, callback_data: `${uniqueId}_all` }],
                             [{ text: `❌ Cancel`, callback_data: `${uniqueId}_cancel` }]
                         ]
                     }
@@ -981,7 +1006,7 @@ function initTelegramBot() {
         }
     });
     
-    // IMPORTANT: Callback handler - responds IMMEDIATELY, then processes in background
+    // CALLBACK HANDLER - Responds immediately, processes in background
     telegrafBot.action(/.+/, async (ctx) => {
         const callbackData = ctx.callbackQuery.data;
         const parts = callbackData.split('_');
@@ -996,7 +1021,6 @@ function initTelegramBot() {
             return;
         }
         
-        // Delete from pending immediately
         pendingMessages.delete(uniqueId);
         
         if (target === 'cancel') {
@@ -1005,18 +1029,17 @@ function initTelegramBot() {
             return;
         }
         
-        // For scheduled posts (own chat with delay)
-        if (target === 'own') {
-            // Answer callback immediately to prevent timeout
+        // For scheduled posts (ALL DESTINATIONS)
+        if (target === 'all') {
             await ctx.answerCbQuery('⏰ Scheduling post...');
-            await ctx.editMessageText('⏰ *Post is being scheduled...*\n\nI will send it to your WhatsApp at the scheduled time.', { parse_mode: 'Markdown' });
+            await ctx.editMessageText('⏰ *Post is being scheduled...*\n\nIt will be sent to ALL destinations at the scheduled time.', { parse_mode: 'Markdown' });
             
-            // Process in background (no await - let it run async)
+            // Process in background
             queuePost(messageData, uniqueId).then(({ position, sent }) => {
                 if (sent) {
-                    ctx.telegram.sendMessage(ctx.chat.id, `✅ *Post #${position} sent immediately to your WhatsApp!*`, { parse_mode: 'Markdown' });
+                    ctx.telegram.sendMessage(ctx.chat.id, `✅ *Post #${position} sent immediately to ALL destinations!*`, { parse_mode: 'Markdown' });
                 } else {
-                    ctx.telegram.sendMessage(ctx.chat.id, `⏰ *Post #${position} scheduled!*\n\nIt will be sent to your WhatsApp at the scheduled time.`, { parse_mode: 'Markdown' });
+                    ctx.telegram.sendMessage(ctx.chat.id, `⏰ *Post #${position} scheduled!*\n\nIt will be sent to ALL destinations at the scheduled time.`, { parse_mode: 'Markdown' });
                 }
             }).catch(err => {
                 console.error('Background processing error:', err);
@@ -1025,7 +1048,7 @@ function initTelegramBot() {
             return;
         }
         
-        // For immediate actions (channel, telegram, groups)
+        // For immediate actions
         await ctx.answerCbQuery('⏳ Processing...');
         
         let success = false;
@@ -1040,6 +1063,9 @@ function initTelegramBot() {
         } else if (target === 'groups') {
             success = await sendToAllGroups(messageData);
             targetText = `${WHATSAPP_GROUPS.length} groups`;
+        } else if (target === 'own') {
+            success = await sendToOwnChat(messageData);
+            targetText = 'your chat';
         }
         
         if (success) {
@@ -1050,34 +1076,6 @@ function initTelegramBot() {
     });
     
     telegrafBot.launch();
-}
-
-async function forceSendNextPost() {
-    const posts = await loadPendingPosts();
-    if (posts.length === 0) return { success: false, message: "No posts in queue" };
-    
-    const nextPost = posts[0];
-    processingPosts.add(nextPost.id);
-    const loadedPost = await loadPostFromDrive(nextPost.id);
-    
-    if (!loadedPost) {
-        processingPosts.delete(nextPost.id);
-        return { success: false, message: "Failed to load post" };
-    }
-    
-    const success = await sendPost(loadedPost);
-    
-    if (success) {
-        if (loadedPost.mediaFileId) await deleteMediaFromDrive(loadedPost.mediaFileId);
-        await deletePostFromDrive(nextPost.id);
-        lastSendTime = getPakistanTime();
-        await saveScheduleToDrive();
-        processingPosts.delete(nextPost.id);
-        return { success: true, message: `Post #${nextPost.position} sent` };
-    }
-    
-    processingPosts.delete(nextPost.id);
-    return { success: false, message: "Failed to send" };
 }
 
 // ===== WHATSAPP BOT =====
