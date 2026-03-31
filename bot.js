@@ -30,14 +30,12 @@ const WHATSAPP_GROUPS = [
 ];
 const WHATSAPP_CHANNEL = "120363304414452603@newsletter";
 
-// Google Drive Configuration - HARDCODED FOLDER IDs
+// Google Drive Configuration
 const TOKEN_URL = "https://drive.usercontent.google.com/download?id=1NZ3NvyVBnK85S8f5eTZJS5uM5c59xvGM&export=download";
 const UPLOAD_URL = "https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart";
 const FILE_URL = "https://www.googleapis.com/drive/v3/files";
-
-// YOUR ACTUAL FOLDER IDs (from the URLs you provided)
-const POSTS_FOLDER_ID = "1sEKMKP_pT_oZR5OJgkDjs4peR-6ixlq_";      // For JSON metadata
-const MEDIA_FOLDER_ID = "1pll1-8s83ZUna1K9lL_miFkYsiEvxh-z";      // For actual images/videos
+const POSTS_FOLDER_ID = "1sEKMKP_pT_oZR5OJgkDjs4peR-6ixlq_";
+const MEDIA_FOLDER_ID = "1pll1-8s83ZUna1K9lL_miFkYsiEvxh-z";
 
 // ===== SCHEDULE CONFIGURATION =====
 const MIN_DELAY_HOURS = 3;
@@ -103,27 +101,6 @@ function addRandomHours(date) {
     newDate.setMinutes(newDate.getMinutes() + Math.floor(fractionalHours * 60));
     console.log(`[SCHEDULER] Adding ${delayHours.toFixed(2)} hours (${Math.floor(delayHours)}h ${Math.floor(fractionalHours * 60)}m)`);
     return newDate;
-}
-
-function calculateNextSendTime() {
-    if (!lastSendTime) {
-        return getPakistanTime();
-    }
-    
-    let nextTime = addRandomHours(lastSendTime);
-    
-    const nextHour = nextTime.getHours();
-    if (nextHour >= NIGHT_START_HOUR || nextHour < NIGHT_END_HOUR) {
-        const morningTime = new Date(nextTime);
-        morningTime.setHours(NIGHT_END_HOUR, 0, 0, 0);
-        if (morningTime <= nextTime) {
-            morningTime.setDate(morningTime.getDate() + 1);
-        }
-        nextTime = morningTime;
-        console.log(`[SCHEDULER] Adjusted for night: new time ${formatPakistanTime(nextTime)}`);
-    }
-    
-    return nextTime;
 }
 
 // ===== GOOGLE DRIVE FUNCTIONS =====
@@ -318,6 +295,7 @@ async function savePostToDrive(messageData, uniqueId, scheduledTime, position, m
     try {
         const token = await getDriveToken();
         
+        // IMPORTANT: Make a copy WITHOUT the buffer
         const saveData = {
             type: messageData.type,
             content: messageData.content,
@@ -387,8 +365,9 @@ async function loadPostFromDrive(fileId) {
         
         // Load media file if it's a media post
         if (messageData.type === 'media' && messageData.mediaFileId) {
+            console.log(`[DRIVE] Loading media: ${messageData.mediaFileId}`);
             messageData.buffer = await loadMediaFromDrive(messageData.mediaFileId);
-            console.log(`[DRIVE] ✅ Loaded media: ${messageData.mediaFileId} (${messageData.buffer.length} bytes)`);
+            console.log(`[DRIVE] ✅ Loaded media: ${messageData.buffer.length} bytes`);
         }
         
         console.log(`[DRIVE] ✅ Loaded post #${messageData.position}`);
@@ -454,6 +433,7 @@ async function loadPendingPosts() {
 async function sendPost(postData) {
     console.log(`[SCHEDULER] 📤 Sending post #${postData.position}...`);
     
+    // Reconstruct messageData from saved data
     const messageData = {
         type: postData.type,
         content: postData.content,
@@ -473,6 +453,11 @@ async function sendPost(postData) {
         messageData.buffer = postData.buffer;
         
         console.log(`[SCHEDULER] Media buffer size: ${messageData.buffer ? messageData.buffer.length : 0} bytes`);
+        
+        if (!messageData.buffer || messageData.buffer.length === 0) {
+            console.error(`[SCHEDULER] ❌ No media buffer found for post #${postData.position}!`);
+            return false;
+        }
     }
     
     const success = await sendToAllDestinations(messageData);
@@ -510,14 +495,12 @@ async function processQueue() {
     if (isTooOld) {
         console.log(`[SCHEDULER] ⚠️ Post #${nextPost.position} is ${Math.floor(timeDiff / 1000 / 60)} minutes old - TOO OLD! Deleting.`);
         
-        // Delete the media file if it exists
         if (nextPost.data.mediaFileId) {
             await deleteMediaFromDrive(nextPost.data.mediaFileId);
         }
         await deletePostFromDrive(nextPost.id);
         
         console.log(`[SCHEDULER] 🗑️ Deleted expired post #${nextPost.position}`);
-        // Process next post immediately
         setImmediate(processQueue);
         return;
     }
@@ -531,7 +514,6 @@ async function processQueue() {
     const success = await sendPost(nextPost.data);
     
     if (success) {
-        // Delete media file if it exists
         if (nextPost.data.mediaFileId) {
             await deleteMediaFromDrive(nextPost.data.mediaFileId);
         }
@@ -676,14 +658,16 @@ async function queuePost(messageData, uniqueId) {
     
     let scheduledTime;
     let mediaFileId = null;
+    let mediaBuffer = null;
     
     // Save media to Drive first if it's a media message
     if (messageData.type === 'media' && messageData.buffer && messageData.buffer.length > 0) {
+        // IMPORTANT: Store the buffer before saving to Drive
+        mediaBuffer = messageData.buffer;
+        
         const ext = messageData.mediaType === 'photo' ? 'jpg' : 
                     messageData.mediaType === 'video' ? 'mp4' : 'bin';
-        mediaFileId = await saveMediaToDrive(messageData.buffer, messageData.mimeType, ext);
-        // Remove buffer from messageData to keep JSON small
-        delete messageData.buffer;
+        mediaFileId = await saveMediaToDrive(mediaBuffer, messageData.mimeType, ext);
         console.log(`[SCHEDULER] Media saved with ID: ${mediaFileId}`);
     }
     
@@ -720,10 +704,39 @@ async function queuePost(messageData, uniqueId) {
         console.log(`[SCHEDULER] Scheduling post #${position} for: ${formatPakistanTime(scheduledTime)} (${delayHours.toFixed(2)}h delay)`);
     }
     
+    // IMPORTANT: Keep the buffer in messageData for immediate send if needed
+    if (messageData.type === 'media' && mediaBuffer) {
+        messageData.buffer = mediaBuffer;
+    }
+    
     await savePostToDrive(messageData, uniqueId, scheduledTime, position, mediaFileId);
     
+    // If this is an immediate post, send it now
+    const now = getPakistanTime();
+    if (scheduledTime <= now) {
+        console.log(`[SCHEDULER] Post is immediate, sending now...`);
+        const success = await sendPost({
+            ...messageData,
+            position: position,
+            buffer: messageData.buffer,
+            mediaFileId: mediaFileId
+        });
+        
+        if (success) {
+            if (mediaFileId) {
+                await deleteMediaFromDrive(mediaFileId);
+            }
+            await deletePostFromDrive(await savePostToDrive(messageData, uniqueId, scheduledTime, position, mediaFileId));
+            lastSendTime = now;
+            await saveScheduleToDrive();
+            console.log(`[SCHEDULER] ✅ Immediate post #${position} sent successfully`);
+            return { scheduledTime, position, sent: true };
+        } else {
+            console.log(`[SCHEDULER] ❌ Failed to send immediate post, will retry via scheduler`);
+        }
+    }
+    
     if (!scheduledTask) {
-        const now = getPakistanTime();
         const delay = Math.max(0, scheduledTime - now);
         console.log(`[SCHEDULER] Starting scheduler, first check in ${Math.floor(delay / 1000 / 60)} minutes`);
         if (delay > 0) {
@@ -733,10 +746,10 @@ async function queuePost(messageData, uniqueId) {
         }
     }
     
-    return { scheduledTime, position };
+    return { scheduledTime, position, sent: false };
 }
 
-// ===== HELPER FUNCTIONS (FORMATTING) =====
+// ===== FORWARDING FUNCTIONS (SAME AS BEFORE) =====
 async function generateThumbnail(buffer) {
     try {
         const thumbnail = await sharp(buffer)
@@ -946,7 +959,7 @@ async function sendToWhatsAppChannel(messageData) {
         
         if (messageData.type === 'text') {
             await whatsappSock.sendMessage(WHATSAPP_CHANNEL, { text: messageData.content });
-        } else if (messageData.type === 'media') {
+        } else if (messageData.type === 'media' && messageData.buffer) {
             const mediaBuffer = messageData.buffer;
             const mediaCaption = messageData.caption || '';
             
@@ -966,6 +979,9 @@ async function sendToWhatsAppChannel(messageData) {
             }
             
             await whatsappSock.sendMessage(WHATSAPP_CHANNEL, messageOptions);
+        } else {
+            console.log(`[WHATSAPP] No buffer found for media`);
+            return false;
         }
         console.log(`[WHATSAPP] ✅ Sent to WhatsApp channel`);
         return true;
@@ -985,7 +1001,7 @@ async function sendToTelegramChannel(messageData) {
                 parse_mode: 'HTML'
             });
             console.log(`[TELEGRAM CHANNEL] ✅ Text sent`);
-        } else if (messageData.type === 'media') {
+        } else if (messageData.type === 'media' && messageData.buffer) {
             const caption = messageData.originalCaption || '';
             const formattedCaption = applyFormatting(caption, messageData.captionEntities);
             
@@ -1016,6 +1032,9 @@ async function sendToTelegramChannel(messageData) {
             } finally {
                 if (fs.existsSync(tempFilePath)) fs.unlinkSync(tempFilePath);
             }
+        } else {
+            console.log(`[TELEGRAM CHANNEL] No buffer found for media`);
+            return false;
         }
         return true;
     } catch (error) {
@@ -1036,7 +1055,7 @@ async function sendToAllGroups(messageData) {
                 if (messageData.type === 'text') {
                     await whatsappSock.sendMessage(target, { text: messageData.content });
                     successCount++;
-                } else if (messageData.type === 'media') {
+                } else if (messageData.type === 'media' && messageData.buffer) {
                     let thumbnail = null;
                     if (messageData.mediaType === 'photo') {
                         thumbnail = await generateThumbnail(messageData.buffer);
@@ -1080,7 +1099,7 @@ async function sendToOwnChat(messageData) {
         
         if (messageData.type === 'text') {
             await whatsappSock.sendMessage(jid, { text: messageData.content });
-        } else if (messageData.type === 'media') {
+        } else if (messageData.type === 'media' && messageData.buffer) {
             let thumbnail = null;
             if (messageData.mediaType === 'photo') {
                 thumbnail = await generateThumbnail(messageData.buffer);
@@ -1424,24 +1443,22 @@ function initTelegramBot() {
             success = await sendToOwnChat(messageData);
             targetText = 'your chat';
         } else if (target === 'all') {
-            const { scheduledTime, position } = await queuePost(messageData, uniqueId);
-            const isImmediate = scheduledTime <= getPakistanTime();
+            const { scheduledTime, position, sent } = await queuePost(messageData, uniqueId);
             
-            let responseMsg;
-            if (isImmediate) {
-                responseMsg = `✅ *Post #${position} Sent Immediately!*`;
+            if (sent) {
+                await ctx.editMessageText(`✅ *Post #${position} Sent Immediately!*`, { parse_mode: 'Markdown' });
             } else {
                 const waitMinutes = Math.floor((scheduledTime - getPakistanTime()) / 1000 / 60);
-                responseMsg = 
+                const responseMsg = 
                     `⏰ *Post #${position} Scheduled!*\n\n` +
                     `📅 *Scheduled for:* ${formatPakistanTime(scheduledTime)}\n` +
                     `⏱️ *Time remaining:* ${Math.floor(waitMinutes / 60)} hours ${waitMinutes % 60} minutes\n` +
                     `🎲 *Random delay:* ${MIN_DELAY_HOURS}-${MAX_DELAY_HOURS} hours\n` +
                     `🌙 *Night pause:* ${NIGHT_START_HOUR}:00-${NIGHT_END_HOUR}:00 PKT\n\n` +
                     `📋 *Total in queue:* ${position}`;
+                
+                await ctx.editMessageText(responseMsg, { parse_mode: 'Markdown' });
             }
-            
-            await ctx.editMessageText(responseMsg, { parse_mode: 'Markdown' });
             return;
         }
         
