@@ -47,7 +47,6 @@ const MISSED_POST_WINDOW_MS = 15 * 60 * 1000;
 // ===== CONSTANTS =====
 const TEMP_DIR = path.join(process.cwd(), 'temp');
 const RATE_LIMIT_DELAY = 3000;
-const SCHEDULE_FILE = "schedule.json";
 
 // ===== STATE =====
 let telegrafBot = null;
@@ -152,19 +151,18 @@ async function getDriveToken() {
     return cachedToken;
 }
 
+// SCHEDULE FUNCTIONS - Using simple text file in Drive
 async function saveScheduleToDrive() {
     try {
         const token = await getDriveToken();
-        const scheduleData = { 
-            lastSendTime: lastSendTime ? lastSendTime.toISOString() : null 
-        };
-        const fileContent = JSON.stringify(scheduleData, null, 2);
-        const tempFile = path.join(TEMP_DIR, SCHEDULE_FILE);
-        fs.writeFileSync(tempFile, fileContent);
+        const content = lastSendTime ? lastSendTime.toISOString() : '';
+        const tempFile = path.join(TEMP_DIR, 'schedule.txt');
+        fs.writeFileSync(tempFile, content);
         
+        // Find existing schedule file
         let fileId = null;
         try {
-            const listResponse = await axios.get(`${FILE_URL}?q=name='${SCHEDULE_FILE}' and '${POSTS_FOLDER_ID}'+in+parents&fields=files(id)`, {
+            const listResponse = await axios.get(`${FILE_URL}?q=name='schedule.txt' and '${POSTS_FOLDER_ID}'+in+parents&fields=files(id)`, {
                 headers: { 'Authorization': `Bearer ${token}` }
             });
             if (listResponse.data.files && listResponse.data.files.length > 0) {
@@ -172,37 +170,45 @@ async function saveScheduleToDrive() {
             }
         } catch (e) {}
         
-        const formData = new FormData();
-        
         if (fileId) {
-            formData.append('metadata', JSON.stringify({ name: SCHEDULE_FILE }), { contentType: 'application/json' });
-            formData.append('file', fs.createReadStream(tempFile));
-            await axios.patch(`${FILE_URL}/${fileId}?uploadType=multipart`, formData, {
-                headers: { 'Authorization': `Bearer ${token}`, ...formData.getHeaders() }
+            // Update existing file - use media upload
+            await axios.patch(`${FILE_URL}/${fileId}?uploadType=media`, fs.createReadStream(tempFile), {
+                headers: {
+                    'Authorization': `Bearer ${token}`,
+                    'Content-Type': 'text/plain'
+                }
             });
+            console.log('[DRIVE] ✅ Schedule updated');
         } else {
-            formData.append('metadata', JSON.stringify({ name: SCHEDULE_FILE, parents: [POSTS_FOLDER_ID] }), { contentType: 'application/json' });
+            // Create new file
+            const formData = new FormData();
+            formData.append('metadata', JSON.stringify({ 
+                name: 'schedule.txt', 
+                parents: [POSTS_FOLDER_ID],
+                mimeType: 'text/plain'
+            }), { contentType: 'application/json' });
             formData.append('file', fs.createReadStream(tempFile));
+            
             await axios.post(UPLOAD_URL, formData, {
-                headers: { 'Authorization': `Bearer ${token}`, ...formData.getHeaders() }
+                headers: {
+                    'Authorization': `Bearer ${token}`,
+                    ...formData.getHeaders()
+                }
             });
+            console.log('[DRIVE] ✅ Schedule created');
         }
         
         fs.unlinkSync(tempFile);
-        console.log('[DRIVE] ✅ Schedule saved');
     } catch (error) {
-        console.error('[DRIVE] ⚠️ Failed to save schedule (non-critical):', error.message);
-        try {
-            const tempFile = path.join(TEMP_DIR, SCHEDULE_FILE);
-            if (fs.existsSync(tempFile)) fs.unlinkSync(tempFile);
-        } catch (e) {}
+        console.error('[DRIVE] ⚠️ Failed to save schedule:', error.message);
     }
 }
 
 async function loadScheduleFromDrive() {
     try {
         const token = await getDriveToken();
-        const listResponse = await axios.get(`${FILE_URL}?q=name='${SCHEDULE_FILE}' and '${POSTS_FOLDER_ID}'+in+parents&fields=files(id)`, {
+        
+        const listResponse = await axios.get(`${FILE_URL}?q=name='schedule.txt' and '${POSTS_FOLDER_ID}'+in+parents&fields=files(id)`, {
             headers: { 'Authorization': `Bearer ${token}` }
         });
         
@@ -212,9 +218,13 @@ async function loadScheduleFromDrive() {
                 headers: { 'Authorization': `Bearer ${token}` },
                 responseType: 'text'
             });
-            const scheduleData = JSON.parse(response.data);
-            lastSendTime = scheduleData.lastSendTime ? new Date(scheduleData.lastSendTime) : null;
-            console.log(`[DRIVE] ✅ Schedule loaded - Last send: ${lastSendTime ? formatPakistanTime(lastSendTime) : 'Never'}`);
+            const content = response.data;
+            if (content) {
+                lastSendTime = new Date(content);
+                console.log(`[DRIVE] ✅ Schedule loaded - Last send: ${formatPakistanTime(lastSendTime)}`);
+            } else {
+                lastSendTime = null;
+            }
         } else {
             console.log('[DRIVE] No schedule file found, starting fresh');
             lastSendTime = null;
@@ -233,11 +243,18 @@ async function saveMediaToDrive(buffer, mimeType, extension) {
         fs.writeFileSync(tempFile, buffer);
         
         const formData = new FormData();
-        formData.append('metadata', JSON.stringify({ name: filename, parents: [MEDIA_FOLDER_ID], mimeType: mimeType }), { contentType: 'application/json' });
+        formData.append('metadata', JSON.stringify({ 
+            name: filename, 
+            parents: [MEDIA_FOLDER_ID],
+            mimeType: mimeType
+        }), { contentType: 'application/json' });
         formData.append('file', fs.createReadStream(tempFile));
         
         const uploadResponse = await axios.post(UPLOAD_URL, formData, {
-            headers: { 'Authorization': `Bearer ${token}`, ...formData.getHeaders() }
+            headers: {
+                'Authorization': `Bearer ${token}`,
+                ...formData.getHeaders()
+            }
         });
         
         fs.unlinkSync(tempFile);
@@ -307,7 +324,10 @@ async function savePostToDrive(messageData, uniqueId, scheduledTime, position, m
         formData.append('file', fs.createReadStream(tempFile));
         
         const uploadResponse = await axios.post(UPLOAD_URL, formData, {
-            headers: { 'Authorization': `Bearer ${token}`, ...formData.getHeaders() }
+            headers: {
+                'Authorization': `Bearer ${token}`,
+                ...formData.getHeaders()
+            }
         });
         
         fs.unlinkSync(tempFile);
