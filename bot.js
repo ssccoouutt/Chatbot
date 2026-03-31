@@ -36,7 +36,6 @@ const UPLOAD_URL = "https://www.googleapis.com/upload/drive/v3/files?uploadType=
 const FILE_URL = "https://www.googleapis.com/drive/v3/files";
 const POSTS_FOLDER_ID = "1sEKMKP_pT_oZR5OJgkDjs4peR-6ixlq_";
 const MEDIA_FOLDER_ID = "1pll1-8s83ZUna1K9lL_miFkYsiEvxh-z";
-const SCHEDULE_FILE_ID = "1tzY2CysClbADcj1zEgLwfzzRAFYOr6Wu"; // Hardcoded schedule file ID
 
 // ===== SCHEDULE CONFIGURATION =====
 const MIN_DELAY_HOURS = 3;
@@ -48,6 +47,7 @@ const MISSED_POST_WINDOW_MS = 15 * 60 * 1000;
 // ===== CONSTANTS =====
 const TEMP_DIR = path.join(process.cwd(), 'temp');
 const RATE_LIMIT_DELAY = 3000;
+const SCHEDULE_FILE_NAME = "schedule.txt";
 
 // ===== STATE =====
 let telegrafBot = null;
@@ -152,27 +152,89 @@ async function getDriveToken() {
     return cachedToken;
 }
 
-// SCHEDULE FUNCTIONS - Using hardcoded file ID
+// SCHEDULE FUNCTIONS - Using correct multipart upload method
 async function saveScheduleToDrive() {
     try {
         const token = await getDriveToken();
         const content = lastSendTime ? lastSendTime.toISOString() : '';
-        const tempFile = path.join(TEMP_DIR, 'schedule.txt');
+        const tempFile = path.join(TEMP_DIR, SCHEDULE_FILE_NAME);
         fs.writeFileSync(tempFile, content);
         
-        // Use the hardcoded file ID directly with media upload
-        await axios.patch(`${FILE_URL}/${SCHEDULE_FILE_ID}?uploadType=media`, fs.createReadStream(tempFile), {
-            headers: {
-                'Authorization': `Bearer ${token}`,
-                'Content-Type': 'text/plain'
+        console.log(`\n${'='.repeat(60)}`);
+        console.log(`[DRIVE] 📤 SAVING SCHEDULE`);
+        console.log(`[DRIVE] Content: "${content}"`);
+        console.log(`[DRIVE] Content length: ${content.length} bytes`);
+        
+        // Find existing schedule file in posts folder
+        let fileId = null;
+        try {
+            const listResponse = await axios.get(`${FILE_URL}?q=name='${SCHEDULE_FILE_NAME}' and '${POSTS_FOLDER_ID}'+in+parents&fields=files(id,name)`, {
+                headers: { 'Authorization': `Bearer ${token}` }
+            });
+            
+            if (listResponse.data.files && listResponse.data.files.length > 0) {
+                fileId = listResponse.data.files[0].id;
+                console.log(`[DRIVE] Found existing schedule file: ${fileId}`);
+            } else {
+                console.log(`[DRIVE] No existing schedule file found, will create new`);
             }
-        });
+        } catch (e) {
+            console.log(`[DRIVE] Error searching for schedule:`, e.response?.data || e.message);
+        }
+        
+        const formData = new FormData();
+        
+        if (fileId) {
+            // UPDATE EXISTING FILE using multipart upload
+            console.log(`[DRIVE] Updating existing file with ID: ${fileId}`);
+            
+            formData.append('metadata', JSON.stringify({ 
+                name: SCHEDULE_FILE_NAME
+            }), { contentType: 'application/json' });
+            formData.append('file', fs.createReadStream(tempFile));
+            
+            const updateResponse = await axios.patch(`${FILE_URL}/${fileId}?uploadType=multipart`, formData, {
+                headers: {
+                    'Authorization': `Bearer ${token}`,
+                    ...formData.getHeaders()
+                }
+            });
+            
+            console.log(`[DRIVE] ✅ Schedule updated successfully`);
+            console.log(`[DRIVE] File ID: ${updateResponse.data.id}`);
+            
+        } else {
+            // CREATE NEW FILE
+            console.log(`[DRIVE] Creating new schedule file`);
+            
+            formData.append('metadata', JSON.stringify({ 
+                name: SCHEDULE_FILE_NAME,
+                parents: [POSTS_FOLDER_ID],
+                mimeType: 'text/plain'
+            }), { contentType: 'application/json' });
+            formData.append('file', fs.createReadStream(tempFile));
+            
+            const createResponse = await axios.post(UPLOAD_URL, formData, {
+                headers: {
+                    'Authorization': `Bearer ${token}`,
+                    ...formData.getHeaders()
+                }
+            });
+            
+            console.log(`[DRIVE] ✅ Schedule created successfully`);
+            console.log(`[DRIVE] File ID: ${createResponse.data.id}`);
+        }
         
         fs.unlinkSync(tempFile);
-        console.log('[DRIVE] ✅ Schedule saved');
+        console.log(`[DRIVE] Schedule saved complete`);
+        console.log(`${'='.repeat(60)}\n`);
         
     } catch (error) {
-        console.error('[DRIVE] ⚠️ Failed to save schedule:', error.message);
+        console.error('[DRIVE] ❌ Failed to save schedule:', error.message);
+        if (error.response) {
+            console.error('[DRIVE] Response status:', error.response.status);
+            console.error('[DRIVE] Response data:', JSON.stringify(error.response.data, null, 2));
+        }
         // Don't throw, just log
     }
 }
@@ -181,20 +243,40 @@ async function loadScheduleFromDrive() {
     try {
         const token = await getDriveToken();
         
-        const response = await axios.get(`${FILE_URL}/${SCHEDULE_FILE_ID}?alt=media`, {
-            headers: { 'Authorization': `Bearer ${token}` },
-            responseType: 'text'
+        console.log(`\n${'='.repeat(60)}`);
+        console.log(`[DRIVE] 📥 LOADING SCHEDULE`);
+        
+        // Find schedule file
+        let fileId = null;
+        const listResponse = await axios.get(`${FILE_URL}?q=name='${SCHEDULE_FILE_NAME}' and '${POSTS_FOLDER_ID}'+in+parents&fields=files(id,name)`, {
+            headers: { 'Authorization': `Bearer ${token}` }
         });
         
-        const content = response.data;
-        
-        if (content) {
-            lastSendTime = new Date(content);
-            console.log(`[DRIVE] ✅ Schedule loaded - Last send: ${formatPakistanTime(lastSendTime)}`);
+        if (listResponse.data.files && listResponse.data.files.length > 0) {
+            fileId = listResponse.data.files[0].id;
+            console.log(`[DRIVE] Found schedule file: ${fileId}`);
+            
+            const response = await axios.get(`${FILE_URL}/${fileId}?alt=media`, {
+                headers: { 'Authorization': `Bearer ${token}` },
+                responseType: 'text'
+            });
+            
+            const content = response.data;
+            console.log(`[DRIVE] Loaded content: "${content}"`);
+            
+            if (content) {
+                lastSendTime = new Date(content);
+                console.log(`[DRIVE] ✅ Schedule loaded - Last send: ${formatPakistanTime(lastSendTime)}`);
+            } else {
+                lastSendTime = null;
+                console.log('[DRIVE] Schedule file empty, starting fresh');
+            }
         } else {
+            console.log('[DRIVE] No schedule file found, starting fresh');
             lastSendTime = null;
-            console.log('[DRIVE] Schedule file empty, starting fresh');
         }
+        
+        console.log(`${'='.repeat(60)}\n`);
     } catch (error) {
         console.log('[DRIVE] No schedule found, starting fresh');
         lastSendTime = null;
@@ -829,7 +911,6 @@ function initTelegramBot() {
     console.log(`👥 Groups: ${WHATSAPP_GROUPS.length} groups configured`);
     console.log(`📁 Posts Folder: ${POSTS_FOLDER_ID}`);
     console.log(`📁 Media Folder: ${MEDIA_FOLDER_ID}`);
-    console.log(`📁 Schedule File ID: ${SCHEDULE_FILE_ID}`);
     console.log(`⏰ Random delay: ${MIN_DELAY_HOURS}-${MAX_DELAY_HOURS} hours`);
     console.log(`🕐 Current PKT: ${formatPakistanTime()}\n`);
     
@@ -852,11 +933,9 @@ function initTelegramBot() {
         );
     });
     
-    // FIXED: /send command - responds immediately
     telegrafBot.command('send', async (ctx) => {
         await ctx.reply('⏰ *Force sending next post...*\n\nI will notify you when it\'s sent.', { parse_mode: 'Markdown' });
         
-        // Process in background
         forceSendNextPost().then(result => {
             if (result.success) {
                 ctx.telegram.sendMessage(ctx.chat.id, `✅ *${result.message}*`, { parse_mode: 'Markdown' });
