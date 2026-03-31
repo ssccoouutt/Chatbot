@@ -57,7 +57,7 @@ let isTelegramActive = false;
 const pendingMessages = new Map();
 let scheduledTask = null;
 let lastSendTime = null;
-const processingPosts = new Set(); // Track posts being processed
+const processingPosts = new Set();
 
 // Create temp directory
 if (!fs.existsSync(TEMP_DIR)) fs.mkdirSync(TEMP_DIR, { recursive: true });
@@ -100,7 +100,7 @@ function addRandomHours(date) {
     newDate.setHours(newDate.getHours() + delayHours);
     const fractionalHours = delayHours - Math.floor(delayHours);
     newDate.setMinutes(newDate.getMinutes() + Math.floor(fractionalHours * 60));
-    console.log(`[SCHEDULER] Adding ${delayHours.toFixed(2)} hours (${Math.floor(delayHours)}h ${Math.floor(fractionalHours * 60)}m)`);
+    console.log(`[SCHEDULER] Adding ${delayHours.toFixed(2)} hours`);
     return newDate;
 }
 
@@ -230,7 +230,6 @@ async function loadScheduleFromDrive() {
     }
 }
 
-// Save media file to Drive
 async function saveMediaToDrive(buffer, mimeType, extension) {
     try {
         const token = await getDriveToken();
@@ -263,7 +262,6 @@ async function saveMediaToDrive(buffer, mimeType, extension) {
     }
 }
 
-// Load media file from Drive
 async function loadMediaFromDrive(fileId) {
     try {
         const token = await getDriveToken();
@@ -278,7 +276,6 @@ async function loadMediaFromDrive(fileId) {
     }
 }
 
-// Delete media file from Drive
 async function deleteMediaFromDrive(fileId) {
     try {
         const token = await getDriveToken();
@@ -291,7 +288,6 @@ async function deleteMediaFromDrive(fileId) {
     }
 }
 
-// Save post metadata to Drive
 async function savePostToDrive(messageData, uniqueId, scheduledTime, position, mediaFileId = null) {
     try {
         const token = await getDriveToken();
@@ -320,7 +316,7 @@ async function savePostToDrive(messageData, uniqueId, scheduledTime, position, m
         const filename = `post_${uniqueId}_${Date.now()}_${position}.json`;
         const fileContent = JSON.stringify(saveData, null, 2);
         
-        console.log(`[DRIVE] 📤 Saving post #${position}: ${filename} at ${formatPakistanTime(scheduledTime)}`);
+        console.log(`[DRIVE] 📤 Saving post #${position}`);
         
         const tempFile = path.join(TEMP_DIR, filename);
         fs.writeFileSync(tempFile, fileContent);
@@ -362,15 +358,13 @@ async function loadPostFromDrive(fileId) {
         });
         
         const messageData = JSON.parse(response.data);
+        console.log(`[DRIVE] ✅ Loaded post #${messageData.position}`);
         
-        // Load media file if it's a media post
         if (messageData.type === 'media' && messageData.mediaFileId) {
-            console.log(`[DRIVE] Loading media: ${messageData.mediaFileId}`);
+            console.log(`[DRIVE] 📸 Loading media: ${messageData.mediaFileId}`);
             messageData.buffer = await loadMediaFromDrive(messageData.mediaFileId);
             console.log(`[DRIVE] ✅ Loaded media: ${messageData.buffer.length} bytes`);
         }
-        
-        console.log(`[DRIVE] ✅ Loaded post #${messageData.position}`);
         
         return messageData;
         
@@ -404,9 +398,8 @@ async function loadPendingPosts() {
         const posts = [];
         
         for (const file of files) {
-            // Skip if this post is currently being processed
             if (processingPosts.has(file.id)) {
-                console.log(`[DRIVE] Skipping post ${file.id} (currently being processed)`);
+                console.log(`[DRIVE] Skipping post ${file.id} (processing)`);
                 continue;
             }
             
@@ -435,294 +428,7 @@ async function loadPendingPosts() {
     }
 }
 
-// ===== SCHEDULER FUNCTIONS =====
-async function sendPost(postData, postId) {
-    console.log(`[SCHEDULER] 📤 Sending post #${postData.position}...`);
-    
-    // Reconstruct messageData from saved data
-    const messageData = {
-        type: postData.type,
-        content: postData.content,
-        originalText: postData.originalText,
-        entities: postData.entities,
-        timestamp: postData.timestamp
-    };
-    
-    if (postData.type === 'media') {
-        messageData.mediaType = postData.mediaType;
-        messageData.size = postData.size;
-        messageData.mimeType = postData.mimeType;
-        messageData.fileName = postData.fileName;
-        messageData.caption = postData.caption;
-        messageData.originalCaption = postData.originalCaption;
-        messageData.captionEntities = postData.captionEntities;
-        messageData.buffer = postData.buffer;
-        
-        console.log(`[SCHEDULER] Media buffer size: ${messageData.buffer ? messageData.buffer.length : 0} bytes`);
-        
-        if (!messageData.buffer || messageData.buffer.length === 0) {
-            console.error(`[SCHEDULER] ❌ No media buffer found for post #${postData.position}!`);
-            return false;
-        }
-    }
-    
-    const success = await sendToAllDestinations(messageData);
-    return success;
-}
-
-async function processQueue() {
-    const posts = await loadPendingPosts();
-    
-    if (posts.length === 0) {
-        console.log('[SCHEDULER] No pending posts');
-        scheduledTask = null;
-        return;
-    }
-    
-    const now = getPakistanTime();
-    const nextPost = posts[0];
-    
-    console.log(`[SCHEDULER] Next post #${nextPost.position} scheduled for: ${formatPakistanTime(nextPost.scheduledTime)}`);
-    console.log(`[SCHEDULER] Current time: ${formatPakistanTime(now)}`);
-    
-    const timeDiff = now - nextPost.scheduledTime;
-    const isWithinWindow = timeDiff >= 0 && timeDiff <= MISSED_POST_WINDOW_MS;
-    const isTooOld = timeDiff > MISSED_POST_WINDOW_MS;
-    
-    // If scheduled time is in the future, wait
-    if (nextPost.scheduledTime > now) {
-        const delay = nextPost.scheduledTime - now;
-        console.log(`[SCHEDULER] Waiting ${Math.floor(delay / 1000 / 60)} minutes until next post`);
-        scheduledTask = setTimeout(processQueue, delay);
-        return;
-    }
-    
-    // Scheduled time is now or in the past
-    if (isTooOld) {
-        console.log(`[SCHEDULER] ⚠️ Post #${nextPost.position} is ${Math.floor(timeDiff / 1000 / 60)} minutes old - TOO OLD! Deleting.`);
-        
-        if (nextPost.data.mediaFileId) {
-            await deleteMediaFromDrive(nextPost.data.mediaFileId);
-        }
-        await deletePostFromDrive(nextPost.id);
-        
-        console.log(`[SCHEDULER] 🗑️ Deleted expired post #${nextPost.position}`);
-        setImmediate(processQueue);
-        return;
-    }
-    
-    if (isWithinWindow) {
-        console.log(`[SCHEDULER] ⏰ Post #${nextPost.position} was missed by ${Math.floor(timeDiff / 1000 / 60)} minutes - sending now!`);
-    } else {
-        console.log(`[SCHEDULER] 📤 Time to send post #${nextPost.position}`);
-    }
-    
-    // Mark as processing to prevent duplicate
-    processingPosts.add(nextPost.id);
-    
-    const success = await sendPost(nextPost.data, nextPost.id);
-    
-    if (success) {
-        if (nextPost.data.mediaFileId) {
-            await deleteMediaFromDrive(nextPost.data.mediaFileId);
-        }
-        await deletePostFromDrive(nextPost.id);
-        
-        lastSendTime = now;
-        await saveScheduleToDrive();
-        
-        console.log(`[SCHEDULER] ✅ Post #${nextPost.position} sent successfully at ${formatPakistanTime(now)}`);
-    } else {
-        console.log(`[SCHEDULER] ❌ Failed to send post #${nextPost.position}`);
-    }
-    
-    // Remove from processing set
-    processingPosts.delete(nextPost.id);
-    
-    // Continue processing next posts
-    setImmediate(processQueue);
-}
-
-async function forceSendNextPost() {
-    const posts = await loadPendingPosts();
-    
-    if (posts.length === 0) {
-        return { success: false, message: "No posts in queue" };
-    }
-    
-    const nextPost = posts[0];
-    console.log(`[SCHEDULER] 🚀 Force sending post #${nextPost.position} immediately!`);
-    
-    // Mark as processing
-    processingPosts.add(nextPost.id);
-    
-    const success = await sendPost(nextPost.data, nextPost.id);
-    
-    if (success) {
-        if (nextPost.data.mediaFileId) {
-            await deleteMediaFromDrive(nextPost.data.mediaFileId);
-        }
-        await deletePostFromDrive(nextPost.id);
-        
-        lastSendTime = getPakistanTime();
-        await saveScheduleToDrive();
-        
-        console.log(`[SCHEDULER] ✅ Post #${nextPost.position} sent successfully`);
-        
-        // Update remaining posts' schedules
-        const remainingPosts = await loadPendingPosts();
-        if (remainingPosts.length > 0) {
-            let currentTime = lastSendTime;
-            for (let i = 0; i < remainingPosts.length; i++) {
-                const post = remainingPosts[i];
-                let newTime = addRandomHours(currentTime);
-                
-                const newHour = newTime.getHours();
-                if (newHour >= NIGHT_START_HOUR || newHour < NIGHT_END_HOUR) {
-                    const morningTime = new Date(newTime);
-                    morningTime.setHours(NIGHT_END_HOUR, 0, 0, 0);
-                    if (morningTime <= newTime) {
-                        morningTime.setDate(morningTime.getDate() + 1);
-                    }
-                    newTime = morningTime;
-                }
-                
-                console.log(`[SCHEDULER] Updating post #${post.position} to ${formatPakistanTime(newTime)}`);
-                
-                const token = await getDriveToken();
-                const updatedData = { ...post.data, scheduledTime: newTime.toISOString() };
-                const fileContent = JSON.stringify(updatedData, null, 2);
-                const tempFile = path.join(TEMP_DIR, `update_${Date.now()}.json`);
-                fs.writeFileSync(tempFile, fileContent);
-                
-                const formData = new FormData();
-                formData.append('metadata', JSON.stringify({ name: post.id }), { contentType: 'application/json' });
-                formData.append('file', fs.createReadStream(tempFile));
-                
-                await axios.patch(`${FILE_URL}/${post.id}?uploadType=multipart`, formData, {
-                    headers: {
-                        'Authorization': `Bearer ${token}`,
-                        ...formData.getHeaders()
-                    }
-                });
-                
-                fs.unlinkSync(tempFile);
-                currentTime = newTime;
-            }
-        }
-        
-        processingPosts.delete(nextPost.id);
-        return { success: true, message: `Post #${nextPost.position} sent successfully` };
-    } else {
-        processingPosts.delete(nextPost.id);
-        return { success: false, message: "Failed to send post" };
-    }
-}
-
-async function queuePost(messageData, uniqueId) {
-    const posts = await loadPendingPosts();
-    const position = posts.length + 1;
-    
-    let scheduledTime;
-    let mediaFileId = null;
-    
-    // Save media to Drive first if it's a media message
-    if (messageData.type === 'media' && messageData.buffer && messageData.buffer.length > 0) {
-        const ext = messageData.mediaType === 'photo' ? 'jpg' : 
-                    messageData.mediaType === 'video' ? 'mp4' : 'bin';
-        mediaFileId = await saveMediaToDrive(messageData.buffer, messageData.mimeType, ext);
-        console.log(`[SCHEDULER] Media saved with ID: ${mediaFileId}`);
-        
-        // Remove buffer from messageData before saving to Drive (it will be reloaded later)
-        delete messageData.buffer;
-    }
-    
-    if (posts.length === 0 && !lastSendTime) {
-        scheduledTime = getPakistanTime();
-        console.log(`[SCHEDULER] First post #${position} - will send immediately after saving`);
-    } else {
-        let lastTime;
-        if (posts.length > 0) {
-            const lastPost = posts[posts.length - 1];
-            lastTime = lastPost.scheduledTime;
-            console.log(`[SCHEDULER] Last queued post scheduled at: ${formatPakistanTime(lastTime)}`);
-        } else if (lastSendTime) {
-            lastTime = lastSendTime;
-            console.log(`[SCHEDULER] Last send time: ${formatPakistanTime(lastTime)}`);
-        } else {
-            lastTime = getPakistanTime();
-        }
-        
-        scheduledTime = addRandomHours(lastTime);
-        
-        const scheduledHour = scheduledTime.getHours();
-        if (scheduledHour >= NIGHT_START_HOUR || scheduledHour < NIGHT_END_HOUR) {
-            const morningTime = new Date(scheduledTime);
-            morningTime.setHours(NIGHT_END_HOUR, 0, 0, 0);
-            if (morningTime <= scheduledTime) {
-                morningTime.setDate(morningTime.getDate() + 1);
-            }
-            scheduledTime = morningTime;
-            console.log(`[SCHEDULER] Adjusted for night: new time ${formatPakistanTime(scheduledTime)}`);
-        }
-        
-        const delayHours = (scheduledTime - lastTime) / (1000 * 60 * 60);
-        console.log(`[SCHEDULER] Scheduling post #${position} for: ${formatPakistanTime(scheduledTime)} (${delayHours.toFixed(2)}h delay)`);
-    }
-    
-    // Save post metadata to Drive
-    const postId = await savePostToDrive(messageData, uniqueId, scheduledTime, position, mediaFileId);
-    
-    // Now load the post back (which will load the media if needed) and send if immediate
-    const now = getPakistanTime();
-    if (scheduledTime <= now) {
-        console.log(`[SCHEDULER] Post #${position} is immediate, loading and sending...`);
-        
-        // Load the post we just saved
-        const loadedPost = await loadPostFromDrive(postId);
-        
-        if (loadedPost) {
-            // Mark as processing
-            processingPosts.add(postId);
-            
-            const success = await sendPost(loadedPost, postId);
-            
-            if (success) {
-                if (loadedPost.mediaFileId) {
-                    await deleteMediaFromDrive(loadedPost.mediaFileId);
-                }
-                await deletePostFromDrive(postId);
-                lastSendTime = now;
-                await saveScheduleToDrive();
-                console.log(`[SCHEDULER] ✅ Immediate post #${position} sent successfully`);
-                processingPosts.delete(postId);
-                return { scheduledTime, position, sent: true };
-            } else {
-                console.log(`[SCHEDULER] ❌ Failed to send immediate post #${position}, will retry via scheduler`);
-                processingPosts.delete(postId);
-            }
-        }
-    }
-    
-    // Start scheduler if not running
-    if (!scheduledTask) {
-        const now = getPakistanTime();
-        const nextPosts = await loadPendingPosts();
-        if (nextPosts.length > 0) {
-            const delay = Math.max(0, nextPosts[0].scheduledTime - now);
-            console.log(`[SCHEDULER] Starting scheduler, first check in ${Math.floor(delay / 1000 / 60)} minutes`);
-            if (delay > 0) {
-                scheduledTask = setTimeout(processQueue, delay);
-            } else {
-                processQueue();
-            }
-        }
-    }
-    
-    return { scheduledTime, position, sent: false };
-}
-
-// ===== FORMATTING FUNCTIONS =====
+// ===== FORWARDING FUNCTIONS =====
 async function generateThumbnail(buffer) {
     try {
         const thumbnail = await sharp(buffer)
@@ -925,7 +631,6 @@ function entitiesToWhatsApp(text, entities) {
     return cleanWhitespace(result);
 }
 
-// ===== FORWARDING FUNCTIONS =====
 async function sendToWhatsAppChannel(messageData) {
     try {
         if (!whatsappSock) return false;
@@ -952,11 +657,7 @@ async function sendToWhatsAppChannel(messageData) {
             }
             
             await whatsappSock.sendMessage(WHATSAPP_CHANNEL, messageOptions);
-        } else {
-            console.log(`[WHATSAPP] No buffer found for media`);
-            return false;
         }
-        console.log(`[WHATSAPP] ✅ Sent to WhatsApp channel`);
         return true;
     } catch (error) {
         console.error(`[WHATSAPP] ❌ Failed:`, error.message);
@@ -973,7 +674,6 @@ async function sendToTelegramChannel(messageData) {
             await sendBot.sendMessage(TELEGRAM_CHANNEL_ID, formattedText, {
                 parse_mode: 'HTML'
             });
-            console.log(`[TELEGRAM CHANNEL] ✅ Text sent`);
         } else if (messageData.type === 'media' && messageData.buffer) {
             const caption = messageData.originalCaption || '';
             const formattedCaption = applyFormatting(caption, messageData.captionEntities);
@@ -1001,13 +701,9 @@ async function sendToTelegramChannel(messageData) {
                         parse_mode: 'HTML'
                     });
                 }
-                console.log(`[TELEGRAM CHANNEL] ✅ ${messageData.mediaType} sent`);
             } finally {
                 if (fs.existsSync(tempFilePath)) fs.unlinkSync(tempFilePath);
             }
-        } else {
-            console.log(`[TELEGRAM CHANNEL] No buffer found for media`);
-            return false;
         }
         return true;
     } catch (error) {
@@ -1056,7 +752,6 @@ async function sendToAllGroups(messageData) {
             }
         }
         
-        console.log(`[WHATSAPP GROUPS] ✅ Sent to ${successCount}/${WHATSAPP_GROUPS.length} groups`);
         return successCount > 0;
     } catch (error) {
         console.error(`[WHATSAPP GROUPS] ❌ Failed:`, error.message);
@@ -1090,7 +785,6 @@ async function sendToOwnChat(messageData) {
             
             await whatsappSock.sendMessage(jid, messageOptions);
         }
-        console.log(`[WHATSAPP OWN] ✅ Sent to own chat`);
         return true;
     } catch (error) {
         console.error(`[WHATSAPP OWN] ❌ Failed:`, error.message);
@@ -1115,6 +809,199 @@ async function sendToAllDestinations(messageData) {
     return allSuccess;
 }
 
+// ===== SCHEDULER FUNCTIONS =====
+async function sendPost(postData) {
+    console.log(`[SCHEDULER] 📤 Sending post #${postData.position}...`);
+    
+    const messageData = {
+        type: postData.type,
+        content: postData.content,
+        originalText: postData.originalText,
+        entities: postData.entities,
+        timestamp: postData.timestamp
+    };
+    
+    if (postData.type === 'media') {
+        messageData.mediaType = postData.mediaType;
+        messageData.size = postData.size;
+        messageData.mimeType = postData.mimeType;
+        messageData.fileName = postData.fileName;
+        messageData.caption = postData.caption;
+        messageData.originalCaption = postData.originalCaption;
+        messageData.captionEntities = postData.captionEntities;
+        messageData.buffer = postData.buffer;
+        
+        if (!messageData.buffer || messageData.buffer.length === 0) {
+            console.error(`[SCHEDULER] ❌ No media buffer for post #${postData.position}!`);
+            return false;
+        }
+    }
+    
+    return await sendToAllDestinations(messageData);
+}
+
+async function processQueue() {
+    const posts = await loadPendingPosts();
+    
+    if (posts.length === 0) {
+        console.log('[SCHEDULER] No pending posts');
+        scheduledTask = null;
+        return;
+    }
+    
+    const now = getPakistanTime();
+    const nextPost = posts[0];
+    
+    console.log(`[SCHEDULER] Next post #${nextPost.position} scheduled for: ${formatPakistanTime(nextPost.scheduledTime)}`);
+    console.log(`[SCHEDULER] Current time: ${formatPakistanTime(now)}`);
+    
+    const timeDiff = now - nextPost.scheduledTime;
+    
+    if (nextPost.scheduledTime > now) {
+        const delay = nextPost.scheduledTime - now;
+        console.log(`[SCHEDULER] Waiting ${Math.floor(delay / 1000 / 60)} minutes`);
+        scheduledTask = setTimeout(processQueue, delay);
+        return;
+    }
+    
+    if (timeDiff > MISSED_POST_WINDOW_MS) {
+        console.log(`[SCHEDULER] ⚠️ Post #${nextPost.position} is ${Math.floor(timeDiff / 1000 / 60)} minutes old - DELETING`);
+        if (nextPost.data.mediaFileId) await deleteMediaFromDrive(nextPost.data.mediaFileId);
+        await deletePostFromDrive(nextPost.id);
+        setImmediate(processQueue);
+        return;
+    }
+    
+    console.log(`[SCHEDULER] 📤 Sending post #${nextPost.position}`);
+    processingPosts.add(nextPost.id);
+    
+    const loadedPost = await loadPostFromDrive(nextPost.id);
+    
+    if (loadedPost) {
+        const success = await sendPost(loadedPost);
+        
+        if (success) {
+            if (loadedPost.mediaFileId) await deleteMediaFromDrive(loadedPost.mediaFileId);
+            await deletePostFromDrive(nextPost.id);
+            lastSendTime = now;
+            await saveScheduleToDrive();
+            console.log(`[SCHEDULER] ✅ Post #${nextPost.position} sent`);
+            
+            // Update remaining posts
+            const remaining = await loadPendingPosts();
+            if (remaining.length > 0) {
+                let currentTime = now;
+                for (const post of remaining) {
+                    let newTime = addRandomHours(currentTime);
+                    const newHour = newTime.getHours();
+                    if (newHour >= NIGHT_START_HOUR || newHour < NIGHT_END_HOUR) {
+                        const morningTime = new Date(newTime);
+                        morningTime.setHours(NIGHT_END_HOUR, 0, 0, 0);
+                        if (morningTime <= newTime) morningTime.setDate(morningTime.getDate() + 1);
+                        newTime = morningTime;
+                    }
+                    
+                    const token = await getDriveToken();
+                    const updatedData = { ...post.data, scheduledTime: newTime.toISOString() };
+                    const tempFile = path.join(TEMP_DIR, `update_${Date.now()}.json`);
+                    fs.writeFileSync(tempFile, JSON.stringify(updatedData, null, 2));
+                    
+                    const formData = new FormData();
+                    formData.append('metadata', JSON.stringify({ name: post.id }), { contentType: 'application/json' });
+                    formData.append('file', fs.createReadStream(tempFile));
+                    
+                    await axios.patch(`${FILE_URL}/${post.id}?uploadType=multipart`, formData, {
+                        headers: { 'Authorization': `Bearer ${token}`, ...formData.getHeaders() }
+                    });
+                    
+                    fs.unlinkSync(tempFile);
+                    currentTime = newTime;
+                }
+            }
+        }
+    }
+    
+    processingPosts.delete(nextPost.id);
+    setImmediate(processQueue);
+}
+
+async function queuePost(messageData, uniqueId) {
+    const posts = await loadPendingPosts();
+    const position = posts.length + 1;
+    
+    let scheduledTime;
+    let mediaFileId = null;
+    let mediaBuffer = null;
+    
+    if (messageData.type === 'media' && messageData.buffer && messageData.buffer.length > 0) {
+        mediaBuffer = messageData.buffer;
+        const ext = messageData.mediaType === 'photo' ? 'jpg' : 
+                    messageData.mediaType === 'video' ? 'mp4' : 'bin';
+        mediaFileId = await saveMediaToDrive(mediaBuffer, messageData.mimeType, ext);
+    }
+    
+    if (posts.length === 0 && !lastSendTime) {
+        scheduledTime = getPakistanTime();
+        console.log(`[QUEUE] Post #${position} - SENDING NOW`);
+    } else {
+        let lastTime;
+        if (posts.length > 0) {
+            lastTime = posts[posts.length - 1].scheduledTime;
+        } else if (lastSendTime) {
+            lastTime = lastSendTime;
+        } else {
+            lastTime = getPakistanTime();
+        }
+        
+        scheduledTime = addRandomHours(lastTime);
+        
+        const scheduledHour = scheduledTime.getHours();
+        if (scheduledHour >= NIGHT_START_HOUR || scheduledHour < NIGHT_END_HOUR) {
+            const morningTime = new Date(scheduledTime);
+            morningTime.setHours(NIGHT_END_HOUR, 0, 0, 0);
+            if (morningTime <= scheduledTime) morningTime.setDate(morningTime.getDate() + 1);
+            scheduledTime = morningTime;
+        }
+        
+        console.log(`[QUEUE] Post #${position} - Scheduled for ${formatPakistanTime(scheduledTime)}`);
+    }
+    
+    const postId = await savePostToDrive(messageData, uniqueId, scheduledTime, position, mediaFileId);
+    
+    const now = getPakistanTime();
+    const isImmediate = scheduledTime <= now;
+    
+    if (isImmediate && mediaBuffer) {
+        console.log(`[QUEUE] Sending immediate post #${position}`);
+        
+        messageData.buffer = mediaBuffer;
+        const success = await sendToAllDestinations(messageData);
+        
+        if (success) {
+            if (mediaFileId) await deleteMediaFromDrive(mediaFileId);
+            await deletePostFromDrive(postId);
+            lastSendTime = now;
+            await saveScheduleToDrive();
+            console.log(`[QUEUE] ✅ Immediate post #${position} sent`);
+            return { scheduledTime, position, sent: true };
+        }
+    }
+    
+    if (!scheduledTask) {
+        const nextPosts = await loadPendingPosts();
+        if (nextPosts.length > 0) {
+            const delay = Math.max(0, nextPosts[0].scheduledTime - now);
+            if (delay > 0) {
+                scheduledTask = setTimeout(processQueue, delay);
+            } else {
+                processQueue();
+            }
+        }
+    }
+    
+    return { scheduledTime, position, sent: false };
+}
+
 // ===== TELEGRAM BOT HANDLER =====
 function initTelegramBot() {
     sendBot = new TelegramBot(TELEGRAM_BOT_TOKEN, { polling: false });
@@ -1124,108 +1011,71 @@ function initTelegramBot() {
     console.log(`📢 Forwarding to channel: ${TELEGRAM_CHANNEL_ID}`);
     console.log(`👥 Groups: ${WHATSAPP_GROUPS.length} groups configured`);
     console.log(`📺 WhatsApp Channel: ${WHATSAPP_CHANNEL}`);
-    console.log(`📁 Posts Folder ID: ${POSTS_FOLDER_ID}`);
-    console.log(`📁 Media Folder ID: ${MEDIA_FOLDER_ID}`);
-    console.log(`⏰ Random delay: ${MIN_DELAY_HOURS}-${MAX_DELAY_HOURS} hours between ALL DESTINATIONS posts`);
+    console.log(`📁 Posts Folder: ${POSTS_FOLDER_ID}`);
+    console.log(`📁 Media Folder: ${MEDIA_FOLDER_ID}`);
+    console.log(`⏰ Random delay: ${MIN_DELAY_HOURS}-${MAX_DELAY_HOURS} hours`);
     console.log(`🌙 Night pause: ${NIGHT_START_HOUR}:00 - ${NIGHT_END_HOUR}:00 PKT`);
-    console.log(`⏱️ Missed post window: ${MISSED_POST_WINDOW_MS / 1000 / 60} minutes`);
     console.log(`🕐 Current PKT: ${formatPakistanTime()}\n`);
     
     telegrafBot.command('start', (ctx) => {
-        const helpMessage = 
+        ctx.reply(
             `🤖 *WhatsApp Forwarder Bot*\n\n` +
-            `Send any message here and choose where to forward it.\n\n` +
-            `*Options after sending:*\n` +
+            `Send any message and choose where to forward it.\n\n` +
+            `*Options:*\n` +
             `• 📺 *WhatsApp Channel* - Send to WhatsApp channel\n` +
             `• 🌐 *Telegram Channel* - Send to Telegram channel\n` +
             `• 👥 *ALL GROUPS* - Send to ${WHATSAPP_GROUPS.length} groups\n` +
             `• 📱 *Own Chat* - Send only to your WhatsApp\n` +
-            `• 🌟 *ALL* - ⏰ **SCHEDULED** - Random ${MIN_DELAY_HOURS}-${MAX_DELAY_HOURS} hour delay between posts\n` +
-            `• ❌ *Cancel* - Don't forward\n\n` +
+            `• 🌟 *ALL* - ⏰ **SCHEDULED** (${MIN_DELAY_HOURS}-${MAX_DELAY_HOURS}h delay)\n` +
+            `• ❌ *Cancel*\n\n` +
             `*Commands:*\n` +
             `• /queue - Check queue status\n` +
-            `• /time - Show current Pakistan time\n` +
-            `• /schedule - Show next scheduled send time\n` +
-            `• /send - Force send the next scheduled post immediately`;
-        
-        ctx.reply(helpMessage, { parse_mode: 'Markdown' });
+            `• /time - Current Pakistan time\n` +
+            `• /send - Force send next post`,
+            { parse_mode: 'Markdown' }
+        );
     });
     
     telegrafBot.command('send', async (ctx) => {
-        await ctx.answerCbQuery('⏳ Sending next post...');
         const result = await forceSendNextPost();
-        
-        if (result.success) {
-            await ctx.reply(`✅ ${result.message}`);
-        } else {
-            await ctx.reply(`❌ ${result.message}`);
-        }
+        await ctx.reply(result.success ? `✅ ${result.message}` : `❌ ${result.message}`);
     });
     
     telegrafBot.command('time', (ctx) => {
-        const msg = `🕐 *Current Pakistan Time:*\n${formatPakistanTime()}\n\n🌙 *Night Mode:* ${isNightTime() ? 'ACTIVE' : 'INACTIVE'}`;
-        ctx.reply(msg, { parse_mode: 'Markdown' });
+        ctx.reply(`🕐 *Pakistan Time:* ${formatPakistanTime()}\n🌙 *Night Mode:* ${isNightTime() ? 'ACTIVE' : 'INACTIVE'}`, { parse_mode: 'Markdown' });
     });
     
     telegrafBot.command('schedule', async (ctx) => {
         const posts = await loadPendingPosts();
-        
         if (posts.length === 0) {
             await ctx.reply('📭 No posts scheduled.');
             return;
         }
         
-        const nextPost = posts[0];
-        const now = getPakistanTime();
-        const waitMinutes = Math.floor((nextPost.scheduledTime - now) / 1000 / 60);
-        
-        let msg = `⏰ *Schedule Status*\n\n`;
-        msg += `📊 *Total queued:* ${posts.length}\n`;
-        msg += `⏱️ *Next post #${nextPost.position} scheduled for:* ${formatPakistanTime(nextPost.scheduledTime)}\n`;
-        
-        if (waitMinutes > 0) {
-            msg += `⏳ *Time remaining:* ${Math.floor(waitMinutes / 60)} hours ${waitMinutes % 60} minutes\n`;
-        } else {
-            msg += `🚀 *Post is ready to send!*\n`;
-        }
-        
+        let msg = `⏰ *Schedule Status*\n\n📊 *Total queued:* ${posts.length}\n`;
+        msg += `⏱️ *Next post #${posts[0].position}:* ${formatPakistanTime(posts[0].scheduledTime)}\n`;
         await ctx.reply(msg, { parse_mode: 'Markdown' });
     });
     
     telegrafBot.command('queue', async (ctx) => {
         const posts = await loadPendingPosts();
-        
         if (posts.length === 0) {
             await ctx.reply('📭 No posts in queue.');
             return;
         }
         
-        let msg = `📋 *Queue Status*\n\n`;
-        msg += `📊 *Total queued:* ${posts.length}\n`;
-        msg += `🕐 *Current PKT:* ${formatPakistanTime()}\n\n`;
-        msg += `*Scheduled times:*\n`;
-        
+        let msg = `📋 *Queue Status*\n\n📊 *Total queued:* ${posts.length}\n🕐 *Current PKT:* ${formatPakistanTime()}\n\n*Scheduled times:*\n`;
         for (let i = 0; i < Math.min(posts.length, 10); i++) {
-            const timeDiff = posts[i].scheduledTime - getPakistanTime();
-            const isExpired = timeDiff < -MISSED_POST_WINDOW_MS;
-            const expiredMark = isExpired ? ' ⚠️ EXPIRED (will be deleted)' : '';
-            msg += `${i + 1}. Post #${posts[i].position}: ${formatPakistanTime(posts[i].scheduledTime)}${expiredMark}\n`;
+            msg += `${i + 1}. Post #${posts[i].position}: ${formatPakistanTime(posts[i].scheduledTime)}\n`;
         }
-        
-        if (posts.length > 10) {
-            msg += `\n... and ${posts.length - 10} more`;
-        }
-        
         await ctx.reply(msg, { parse_mode: 'Markdown' });
     });
     
     telegrafBot.on('text', async (ctx) => {
-        const message = ctx.message;
-        const originalText = message.text;
-        const entities = message.entities || [];
+        const originalText = ctx.message.text;
+        const entities = ctx.message.entities || [];
         
-        console.log(`\n${'='.repeat(60)}`);
-        console.log(`[TELEGRAM BOT] 📝 Text received at ${formatPakistanTime()}`);
+        console.log(`\n[TELEGRAM] 📝 Text received at ${formatPakistanTime()}`);
         
         const simpleEntities = entities.map(e => ({
             type: e.type,
@@ -1235,7 +1085,6 @@ function initTelegramBot() {
         }));
         
         const formattedForWhatsApp = entitiesToWhatsApp(originalText, simpleEntities);
-        
         const uniqueId = `${ctx.chat.id}_${Date.now()}_${Math.random().toString(36).substr(2, 6)}`;
         
         pendingMessages.set(uniqueId, {
@@ -1246,30 +1095,29 @@ function initTelegramBot() {
             timestamp: Date.now()
         });
         
-        const opts = {
-            reply_markup: {
-                inline_keyboard: [
-                    [{ text: `📺 WhatsApp Channel`, callback_data: `${uniqueId}_channel` }],
-                    [{ text: `🌐 Telegram Channel`, callback_data: `${uniqueId}_telegram` }],
-                    [{ text: `👥 ALL GROUPS (${WHATSAPP_GROUPS.length})`, callback_data: `${uniqueId}_groups` }],
-                    [{ text: `📱 Own Chat`, callback_data: `${uniqueId}_own` }],
-                    [{ text: `⏰🌟 SCHEDULED (${MIN_DELAY_HOURS}-${MAX_DELAY_HOURS}h delay)`, callback_data: `${uniqueId}_all` }],
-                    [{ text: `❌ Cancel`, callback_data: `${uniqueId}_cancel` }]
-                ]
+        await ctx.reply(
+            `📨 New Message\n\nPreview: ${originalText.substring(0, 100)}...\n\nForward to?`,
+            {
+                reply_markup: {
+                    inline_keyboard: [
+                        [{ text: `📺 WhatsApp Channel`, callback_data: `${uniqueId}_channel` }],
+                        [{ text: `🌐 Telegram Channel`, callback_data: `${uniqueId}_telegram` }],
+                        [{ text: `👥 ALL GROUPS (${WHATSAPP_GROUPS.length})`, callback_data: `${uniqueId}_groups` }],
+                        [{ text: `📱 Own Chat`, callback_data: `${uniqueId}_own` }],
+                        [{ text: `⏰🌟 SCHEDULED (${MIN_DELAY_HOURS}-${MAX_DELAY_HOURS}h)`, callback_data: `${uniqueId}_all` }],
+                        [{ text: `❌ Cancel`, callback_data: `${uniqueId}_cancel` }]
+                    ]
+                }
             }
-        };
-        
-        await ctx.reply(`📨 New Message\n\nPreview: ${originalText.substring(0, 100)}...\n\nForward to?`, opts);
+        );
     });
     
     telegrafBot.on('photo', async (ctx) => {
-        const message = ctx.message;
-        const caption = message.caption || '';
-        const entities = message.caption_entities || [];
-        const photo = message.photo[message.photo.length - 1];
+        const caption = ctx.message.caption || '';
+        const entities = ctx.message.caption_entities || [];
+        const photo = ctx.message.photo[ctx.message.photo.length - 1];
         
-        console.log(`\n${'='.repeat(60)}`);
-        console.log(`[TELEGRAM BOT] 📸 Photo received at ${formatPakistanTime()}`);
+        console.log(`\n[TELEGRAM] 📸 Photo received at ${formatPakistanTime()}`);
         
         try {
             const fileLink = await ctx.telegram.getFileLink(photo.file_id);
@@ -1284,7 +1132,6 @@ function initTelegramBot() {
             }));
             
             const formattedCaption = entitiesToWhatsApp(caption, simpleEntities);
-            
             const uniqueId = `${ctx.chat.id}_${Date.now()}_${Math.random().toString(36).substr(2, 6)}`;
             
             pendingMessages.set(uniqueId, {
@@ -1298,20 +1145,21 @@ function initTelegramBot() {
                 timestamp: Date.now()
             });
             
-            const opts = {
-                reply_markup: {
-                    inline_keyboard: [
-                        [{ text: `📺 WhatsApp Channel`, callback_data: `${uniqueId}_channel` }],
-                        [{ text: `🌐 Telegram Channel`, callback_data: `${uniqueId}_telegram` }],
-                        [{ text: `👥 ALL GROUPS (${WHATSAPP_GROUPS.length})`, callback_data: `${uniqueId}_groups` }],
-                        [{ text: `📱 Own Chat`, callback_data: `${uniqueId}_own` }],
-                        [{ text: `⏰🌟 SCHEDULED (${MIN_DELAY_HOURS}-${MAX_DELAY_HOURS}h delay)`, callback_data: `${uniqueId}_all` }],
-                        [{ text: `❌ Cancel`, callback_data: `${uniqueId}_cancel` }]
-                    ]
+            await ctx.reply(
+                `📨 New Photo\n\nCaption: ${caption.substring(0, 100)}...\n\nForward to?`,
+                {
+                    reply_markup: {
+                        inline_keyboard: [
+                            [{ text: `📺 WhatsApp Channel`, callback_data: `${uniqueId}_channel` }],
+                            [{ text: `🌐 Telegram Channel`, callback_data: `${uniqueId}_telegram` }],
+                            [{ text: `👥 ALL GROUPS (${WHATSAPP_GROUPS.length})`, callback_data: `${uniqueId}_groups` }],
+                            [{ text: `📱 Own Chat`, callback_data: `${uniqueId}_own` }],
+                            [{ text: `⏰🌟 SCHEDULED (${MIN_DELAY_HOURS}-${MAX_DELAY_HOURS}h)`, callback_data: `${uniqueId}_all` }],
+                            [{ text: `❌ Cancel`, callback_data: `${uniqueId}_cancel` }]
+                        ]
+                    }
                 }
-            };
-            
-            await ctx.reply(`📨 New Photo\n\nCaption: ${caption.substring(0, 100)}...\n\nForward to?`, opts);
+            );
         } catch (error) {
             console.error('Error processing photo:', error.message);
             await ctx.reply('❌ Failed to process image.');
@@ -1319,13 +1167,11 @@ function initTelegramBot() {
     });
     
     telegrafBot.on('video', async (ctx) => {
-        const message = ctx.message;
-        const caption = message.caption || '';
-        const entities = message.caption_entities || [];
-        const video = message.video;
+        const caption = ctx.message.caption || '';
+        const entities = ctx.message.caption_entities || [];
+        const video = ctx.message.video;
         
-        console.log(`\n${'='.repeat(60)}`);
-        console.log(`[TELEGRAM BOT] 🎥 Video received at ${formatPakistanTime()}`);
+        console.log(`\n[TELEGRAM] 🎥 Video received at ${formatPakistanTime()}`);
         
         try {
             const fileLink = await ctx.telegram.getFileLink(video.file_id);
@@ -1340,7 +1186,6 @@ function initTelegramBot() {
             }));
             
             const formattedCaption = entitiesToWhatsApp(caption, simpleEntities);
-            
             const uniqueId = `${ctx.chat.id}_${Date.now()}_${Math.random().toString(36).substr(2, 6)}`;
             
             pendingMessages.set(uniqueId, {
@@ -1354,20 +1199,21 @@ function initTelegramBot() {
                 timestamp: Date.now()
             });
             
-            const opts = {
-                reply_markup: {
-                    inline_keyboard: [
-                        [{ text: `📺 WhatsApp Channel`, callback_data: `${uniqueId}_channel` }],
-                        [{ text: `🌐 Telegram Channel`, callback_data: `${uniqueId}_telegram` }],
-                        [{ text: `👥 ALL GROUPS (${WHATSAPP_GROUPS.length})`, callback_data: `${uniqueId}_groups` }],
-                        [{ text: `📱 Own Chat`, callback_data: `${uniqueId}_own` }],
-                        [{ text: `⏰🌟 SCHEDULED (${MIN_DELAY_HOURS}-${MAX_DELAY_HOURS}h delay)`, callback_data: `${uniqueId}_all` }],
-                        [{ text: `❌ Cancel`, callback_data: `${uniqueId}_cancel` }]
-                    ]
+            await ctx.reply(
+                `📨 New Video\n\nCaption: ${caption.substring(0, 100)}...\n\nForward to?`,
+                {
+                    reply_markup: {
+                        inline_keyboard: [
+                            [{ text: `📺 WhatsApp Channel`, callback_data: `${uniqueId}_channel` }],
+                            [{ text: `🌐 Telegram Channel`, callback_data: `${uniqueId}_telegram` }],
+                            [{ text: `👥 ALL GROUPS (${WHATSAPP_GROUPS.length})`, callback_data: `${uniqueId}_groups` }],
+                            [{ text: `📱 Own Chat`, callback_data: `${uniqueId}_own` }],
+                            [{ text: `⏰🌟 SCHEDULED (${MIN_DELAY_HOURS}-${MAX_DELAY_HOURS}h)`, callback_data: `${uniqueId}_all` }],
+                            [{ text: `❌ Cancel`, callback_data: `${uniqueId}_cancel` }]
+                        ]
+                    }
                 }
-            };
-            
-            await ctx.reply(`📨 New Video\n\nCaption: ${caption.substring(0, 100)}...\n\nForward to?`, opts);
+            );
         } catch (error) {
             console.error('Error processing video:', error.message);
             await ctx.reply('❌ Failed to process video.');
@@ -1412,21 +1258,11 @@ function initTelegramBot() {
             success = await sendToOwnChat(messageData);
             targetText = 'your chat';
         } else if (target === 'all') {
-            const { scheduledTime, position, sent } = await queuePost(messageData, uniqueId);
-            
+            const { position, sent } = await queuePost(messageData, uniqueId);
             if (sent) {
-                await ctx.editMessageText(`✅ *Post #${position} Sent Immediately!*`, { parse_mode: 'Markdown' });
+                await ctx.editMessageText(`✅ *Post #${position} Sent!*`, { parse_mode: 'Markdown' });
             } else {
-                const waitMinutes = Math.floor((scheduledTime - getPakistanTime()) / 1000 / 60);
-                const responseMsg = 
-                    `⏰ *Post #${position} Scheduled!*\n\n` +
-                    `📅 *Scheduled for:* ${formatPakistanTime(scheduledTime)}\n` +
-                    `⏱️ *Time remaining:* ${Math.floor(waitMinutes / 60)} hours ${waitMinutes % 60} minutes\n` +
-                    `🎲 *Random delay:* ${MIN_DELAY_HOURS}-${MAX_DELAY_HOURS} hours\n` +
-                    `🌙 *Night pause:* ${NIGHT_START_HOUR}:00-${NIGHT_END_HOUR}:00 PKT\n\n` +
-                    `📋 *Total in queue:* ${position}`;
-                
-                await ctx.editMessageText(responseMsg, { parse_mode: 'Markdown' });
+                await ctx.editMessageText(`⏰ *Post #${position} Scheduled!*\n\n📋 *Total in queue:* ${position}`, { parse_mode: 'Markdown' });
             }
             return;
         }
@@ -1458,22 +1294,18 @@ async function startBot() {
 
     sock.ev.on("connection.update", (update) => {
         const { connection, lastDisconnect, qr } = update;
-        if (qr) {
-            console.log(`[DEBUG] QR Code received, scanning...`);
-            qrcode.generate(qr, { small: true });
-        }
+        if (qr) qrcode.generate(qr, { small: true });
         if (connection === "close") {
             const shouldReconnect = (lastDisconnect.error instanceof Boom)?.output?.statusCode !== DisconnectReason.loggedOut;
-            console.log(`[DEBUG] Connection closed, reconnecting: ${shouldReconnect}`);
+            console.log(`Connection closed, reconnecting: ${shouldReconnect}`);
             if (shouldReconnect) startBot();
         } else if (connection === "open") {
-            console.log("\n✅✅✅ WHATSAPP BOT CONNECTED SUCCESSFULLY! ✅✅✅");
+            console.log("\n✅✅✅ WHATSAPP BOT CONNECTED! ✅✅✅");
             console.log(`📱 WhatsApp Number: ${WHATSAPP_NUMBER}`);
-            console.log(`👥 Groups: ${WHATSAPP_GROUPS.length} groups configured`);
+            console.log(`👥 Groups: ${WHATSAPP_GROUPS.length}`);
             console.log(`📺 WhatsApp Channel: ${WHATSAPP_CHANNEL}`);
-            console.log(`⏰ Random delay: ${MIN_DELAY_HOURS}-${MAX_DELAY_HOURS} hours between ALL DESTINATIONS posts`);
+            console.log(`⏰ Random delay: ${MIN_DELAY_HOURS}-${MAX_DELAY_HOURS} hours`);
             console.log(`🌙 Night pause: ${NIGHT_START_HOUR}:00 - ${NIGHT_END_HOUR}:00 PKT`);
-            console.log(`⏱️ Missed post window: ${MISSED_POST_WINDOW_MS / 1000 / 60} minutes`);
             console.log(`🕐 Current PKT: ${formatPakistanTime()}\n`);
             
             if (!isTelegramActive) {
@@ -1488,9 +1320,7 @@ async function startBot() {
     sock.ev.on("messages.upsert", async (m) => {
         const msg = m.messages[0];
         if (!msg.message || msg.key.fromMe) return;
-
         const from = msg.key.remoteJid;
-        
         if (from.includes('@g.us')) return;
         
         let text = '';
@@ -1499,72 +1329,61 @@ async function startBot() {
         else if (msg.message?.imageMessage?.caption) text = msg.message.imageMessage.caption;
         else if (msg.message?.videoMessage?.caption) text = msg.message.videoMessage.caption;
         else return;
-
+        
         const userMessage = text.toLowerCase().trim();
-        console.log(`[WHATSAPP PRIVATE] 📱 Message from ${from}: ${text}`);
-
+        console.log(`[WHATSAPP] 📱 ${from}: ${text}`);
+        
         if (userMessage === '.ping') {
             await sock.sendMessage(from, { text: 'pong 🏓' });
-        }
-        else if (userMessage === '.help' || userMessage === '.menu') {
-            const helpText = `*Available Commands:*\n\n` +
-                `• .ping - Test bot response\n` +
-                `• .help - Show this menu\n\n` +
-                `*Telegram Bridge is ACTIVE*\n` +
-                `Send any message to @CloudShellBot on Telegram to forward to:\n` +
-                `📺 WhatsApp Channel\n` +
-                `🌐 Telegram Channel\n` +
-                `👥 ${WHATSAPP_GROUPS.length} Groups\n` +
-                `📱 Own Chat\n` +
-                `⏰🌟 SCHEDULED ALL (Random ${MIN_DELAY_HOURS}-${MAX_DELAY_HOURS}h delay)`;
-            await sock.sendMessage(from, { text: helpText });
         }
     });
 }
 
-// Load existing data on startup
 async function loadExistingData() {
     await loadScheduleFromDrive();
     const posts = await loadPendingPosts();
-    
     if (posts.length > 0) {
-        console.log(`[STARTUP] Found ${posts.length} scheduled posts. Checking for missed posts...`);
-        
+        console.log(`[STARTUP] Found ${posts.length} scheduled posts`);
         const now = getPakistanTime();
-        let deletedCount = 0;
-        
-        // Delete any posts that are too old
-        for (const post of posts) {
-            const timeDiff = now - post.scheduledTime;
-            if (timeDiff > MISSED_POST_WINDOW_MS) {
-                console.log(`[STARTUP] 🗑️ Deleting expired post #${post.position} (${Math.floor(timeDiff / 1000 / 60)} minutes old)`);
-                if (post.data.mediaFileId) {
-                    await deleteMediaFromDrive(post.data.mediaFileId);
-                }
-                await deletePostFromDrive(post.id);
-                deletedCount++;
-            }
-        }
-        
-        if (deletedCount > 0) {
-            console.log(`[STARTUP] Deleted ${deletedCount} expired posts`);
-        }
-        
-        // Get remaining posts
-        const remainingPosts = await loadPendingPosts();
-        
-        if (remainingPosts.length > 0) {
-            console.log(`[STARTUP] Starting scheduler with ${remainingPosts.length} remaining posts...`);
-            const nextPost = remainingPosts[0];
-            const delay = Math.max(0, nextPost.scheduledTime - now);
-            console.log(`[STARTUP] Next post at: ${formatPakistanTime(nextPost.scheduledTime)} (${Math.floor(delay / 1000 / 60)} minutes)`);
-            if (delay > 0) {
-                scheduledTask = setTimeout(processQueue, delay);
-            } else {
-                processQueue();
-            }
+        const nextPost = posts[0];
+        const delay = Math.max(0, nextPost.scheduledTime - now);
+        console.log(`[STARTUP] Next post at: ${formatPakistanTime(nextPost.scheduledTime)}`);
+        if (delay > 0) {
+            scheduledTask = setTimeout(processQueue, delay);
+        } else {
+            processQueue();
         }
     }
+}
+
+async function forceSendNextPost() {
+    const posts = await loadPendingPosts();
+    if (posts.length === 0) return { success: false, message: "No posts in queue" };
+    
+    const nextPost = posts[0];
+    console.log(`[FORCE] Sending post #${nextPost.position}`);
+    
+    processingPosts.add(nextPost.id);
+    const loadedPost = await loadPostFromDrive(nextPost.id);
+    
+    if (!loadedPost) {
+        processingPosts.delete(nextPost.id);
+        return { success: false, message: "Failed to load post" };
+    }
+    
+    const success = await sendPost(loadedPost);
+    
+    if (success) {
+        if (loadedPost.mediaFileId) await deleteMediaFromDrive(loadedPost.mediaFileId);
+        await deletePostFromDrive(nextPost.id);
+        lastSendTime = getPakistanTime();
+        await saveScheduleToDrive();
+        processingPosts.delete(nextPost.id);
+        return { success: true, message: `Post #${nextPost.position} sent` };
+    }
+    
+    processingPosts.delete(nextPost.id);
+    return { success: false, message: "Failed to send" };
 }
 
 process.on('SIGINT', async () => {
@@ -1581,8 +1400,4 @@ process.on('SIGTERM', async () => {
     process.exit(0);
 });
 
-startBot().then(() => {
-    loadExistingData();
-}).catch(err => {
-    console.error('Fatal error:', err);
-});
+startBot().then(() => loadExistingData()).catch(err => console.error('Fatal error:', err));
