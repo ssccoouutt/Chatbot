@@ -99,7 +99,6 @@ function addRandomHours(date) {
     newDate.setHours(newDate.getHours() + delayHours);
     const fractionalHours = delayHours - Math.floor(delayHours);
     newDate.setMinutes(newDate.getMinutes() + Math.floor(fractionalHours * 60));
-    console.log(`[SCHEDULER] Adding ${delayHours.toFixed(2)} hours delay`);
     return newDate;
 }
 
@@ -161,9 +160,6 @@ async function saveScheduleToDrive() {
         const tempFile = path.join(TEMP_DIR, 'schedule.txt');
         fs.writeFileSync(tempFile, content);
         
-        console.log(`[DRIVE] 📤 Saving schedule to file ID: ${SCHEDULE_FILE_ID}`);
-        console.log(`[DRIVE] Content: ${content || '(empty)'}`);
-        
         // Use the hardcoded file ID directly with media upload
         await axios.patch(`${FILE_URL}/${SCHEDULE_FILE_ID}?uploadType=media`, fs.createReadStream(tempFile), {
             headers: {
@@ -173,14 +169,10 @@ async function saveScheduleToDrive() {
         });
         
         fs.unlinkSync(tempFile);
-        console.log('[DRIVE] ✅ Schedule saved successfully');
+        console.log('[DRIVE] ✅ Schedule saved');
         
     } catch (error) {
-        console.error('[DRIVE] ❌ Failed to save schedule:', error.message);
-        if (error.response) {
-            console.error('[DRIVE] Response status:', error.response.status);
-            console.error('[DRIVE] Response data:', error.response.data);
-        }
+        console.error('[DRIVE] ⚠️ Failed to save schedule:', error.message);
         // Don't throw, just log
     }
 }
@@ -189,15 +181,12 @@ async function loadScheduleFromDrive() {
     try {
         const token = await getDriveToken();
         
-        console.log(`[DRIVE] 📥 Loading schedule from file ID: ${SCHEDULE_FILE_ID}`);
-        
         const response = await axios.get(`${FILE_URL}/${SCHEDULE_FILE_ID}?alt=media`, {
             headers: { 'Authorization': `Bearer ${token}` },
             responseType: 'text'
         });
         
         const content = response.data;
-        console.log(`[DRIVE] Loaded content: ${content || '(empty)'}`);
         
         if (content) {
             lastSendTime = new Date(content);
@@ -710,20 +699,17 @@ async function processQueue() {
     
     if (nextPost.scheduledTime > now) {
         const delay = nextPost.scheduledTime - now;
-        console.log(`[SCHEDULER] Waiting ${Math.floor(delay / 1000 / 60)} minutes until next post`);
         scheduledTask = setTimeout(processQueue, delay);
         return;
     }
     
     if (timeDiff > MISSED_POST_WINDOW_MS) {
-        console.log(`[SCHEDULER] Post #${nextPost.position} is ${Math.floor(timeDiff / 1000 / 60)} minutes old - DELETING`);
         if (nextPost.data.mediaFileId) await deleteMediaFromDrive(nextPost.data.mediaFileId);
         await deletePostFromDrive(nextPost.id);
         setImmediate(processQueue);
         return;
     }
     
-    console.log(`[SCHEDULER] Sending post #${nextPost.position}`);
     processingPosts.add(nextPost.id);
     const loadedPost = await loadPostFromDrive(nextPost.id);
     
@@ -734,7 +720,6 @@ async function processQueue() {
             await deletePostFromDrive(nextPost.id);
             lastSendTime = now;
             await saveScheduleToDrive();
-            console.log(`[SCHEDULER] ✅ Post #${nextPost.position} sent successfully`);
         }
     }
     
@@ -757,7 +742,6 @@ async function queuePost(messageData, uniqueId) {
     
     if (posts.length === 0 && !lastSendTime) {
         scheduledTime = getPakistanTime();
-        console.log(`[QUEUE] First post - sending immediately`);
     } else {
         let lastTime;
         if (posts.length > 0) {
@@ -774,9 +758,7 @@ async function queuePost(messageData, uniqueId) {
             morningTime.setHours(NIGHT_END_HOUR, 0, 0, 0);
             if (morningTime <= scheduledTime) morningTime.setDate(morningTime.getDate() + 1);
             scheduledTime = morningTime;
-            console.log(`[QUEUE] Adjusted for night: ${formatPakistanTime(scheduledTime)}`);
         }
-        console.log(`[QUEUE] Post #${position} scheduled for: ${formatPakistanTime(scheduledTime)}`);
     }
     
     const postId = await savePostToDrive(messageData, uniqueId, scheduledTime, position, mediaFileId);
@@ -784,7 +766,6 @@ async function queuePost(messageData, uniqueId) {
     const isImmediate = scheduledTime <= now;
     
     if (isImmediate && mediaBuffer) {
-        console.log(`[QUEUE] Sending immediate post #${position}`);
         messageData.buffer = mediaBuffer;
         const success = await sendToAllDestinations(messageData);
         if (success) {
@@ -792,7 +773,6 @@ async function queuePost(messageData, uniqueId) {
             await deletePostFromDrive(postId);
             lastSendTime = now;
             await saveScheduleToDrive();
-            console.log(`[QUEUE] ✅ Immediate post #${position} sent`);
             return { scheduledTime, position, sent: true };
         }
     }
@@ -817,7 +797,6 @@ async function forceSendNextPost() {
     if (posts.length === 0) return { success: false, message: "No posts in queue" };
     
     const nextPost = posts[0];
-    console.log(`[FORCE] Sending post #${nextPost.position}`);
     processingPosts.add(nextPost.id);
     const loadedPost = await loadPostFromDrive(nextPost.id);
     
@@ -873,9 +852,21 @@ function initTelegramBot() {
         );
     });
     
+    // FIXED: /send command - responds immediately
     telegrafBot.command('send', async (ctx) => {
-        const result = await forceSendNextPost();
-        await ctx.reply(result.success ? `✅ ${result.message}` : `❌ ${result.message}`);
+        await ctx.reply('⏰ *Force sending next post...*\n\nI will notify you when it\'s sent.', { parse_mode: 'Markdown' });
+        
+        // Process in background
+        forceSendNextPost().then(result => {
+            if (result.success) {
+                ctx.telegram.sendMessage(ctx.chat.id, `✅ *${result.message}*`, { parse_mode: 'Markdown' });
+            } else {
+                ctx.telegram.sendMessage(ctx.chat.id, `❌ *${result.message}*`, { parse_mode: 'Markdown' });
+            }
+        }).catch(err => {
+            console.error('Force send error:', err);
+            ctx.telegram.sendMessage(ctx.chat.id, '❌ Failed to send post.');
+        });
     });
     
     telegrafBot.command('time', (ctx) => {
