@@ -57,6 +57,7 @@ let isTelegramActive = false;
 const pendingMessages = new Map();
 let scheduledTask = null;
 let lastSendTime = null;
+const processingPosts = new Set(); // Track posts being processed
 
 // Create temp directory
 if (!fs.existsSync(TEMP_DIR)) fs.mkdirSync(TEMP_DIR, { recursive: true });
@@ -229,7 +230,7 @@ async function loadScheduleFromDrive() {
     }
 }
 
-// Save media file to Drive (as actual file)
+// Save media file to Drive
 async function saveMediaToDrive(buffer, mimeType, extension) {
     try {
         const token = await getDriveToken();
@@ -295,7 +296,6 @@ async function savePostToDrive(messageData, uniqueId, scheduledTime, position, m
     try {
         const token = await getDriveToken();
         
-        // IMPORTANT: Make a copy WITHOUT the buffer
         const saveData = {
             type: messageData.type,
             content: messageData.content,
@@ -303,7 +303,8 @@ async function savePostToDrive(messageData, uniqueId, scheduledTime, position, m
             entities: messageData.entities,
             timestamp: messageData.timestamp,
             scheduledTime: scheduledTime.toISOString(),
-            position: position
+            position: position,
+            mediaFileId: mediaFileId
         };
         
         if (messageData.type === 'media') {
@@ -314,7 +315,6 @@ async function savePostToDrive(messageData, uniqueId, scheduledTime, position, m
             saveData.caption = messageData.caption;
             saveData.originalCaption = messageData.originalCaption;
             saveData.captionEntities = messageData.captionEntities;
-            saveData.mediaFileId = mediaFileId; // Reference to the actual media file
         }
         
         const filename = `post_${uniqueId}_${Date.now()}_${position}.json`;
@@ -404,6 +404,12 @@ async function loadPendingPosts() {
         const posts = [];
         
         for (const file of files) {
+            // Skip if this post is currently being processed
+            if (processingPosts.has(file.id)) {
+                console.log(`[DRIVE] Skipping post ${file.id} (currently being processed)`);
+                continue;
+            }
+            
             try {
                 const fileResponse = await axios.get(`${FILE_URL}/${file.id}?alt=media`, {
                     headers: { 'Authorization': `Bearer ${token}` },
@@ -430,7 +436,7 @@ async function loadPendingPosts() {
 }
 
 // ===== SCHEDULER FUNCTIONS =====
-async function sendPost(postData) {
+async function sendPost(postData, postId) {
     console.log(`[SCHEDULER] 📤 Sending post #${postData.position}...`);
     
     // Reconstruct messageData from saved data
@@ -511,7 +517,10 @@ async function processQueue() {
         console.log(`[SCHEDULER] 📤 Time to send post #${nextPost.position}`);
     }
     
-    const success = await sendPost(nextPost.data);
+    // Mark as processing to prevent duplicate
+    processingPosts.add(nextPost.id);
+    
+    const success = await sendPost(nextPost.data, nextPost.id);
     
     if (success) {
         if (nextPost.data.mediaFileId) {
@@ -523,66 +532,15 @@ async function processQueue() {
         await saveScheduleToDrive();
         
         console.log(`[SCHEDULER] ✅ Post #${nextPost.position} sent successfully at ${formatPakistanTime(now)}`);
-        
-        // Update remaining posts' scheduled times
-        const remainingPosts = await loadPendingPosts();
-        if (remainingPosts.length > 0) {
-            let currentTime = now;
-            for (let i = 0; i < remainingPosts.length; i++) {
-                const post = remainingPosts[i];
-                let newTime = addRandomHours(currentTime);
-                
-                const newHour = newTime.getHours();
-                if (newHour >= NIGHT_START_HOUR || newHour < NIGHT_END_HOUR) {
-                    const morningTime = new Date(newTime);
-                    morningTime.setHours(NIGHT_END_HOUR, 0, 0, 0);
-                    if (morningTime <= newTime) {
-                        morningTime.setDate(morningTime.getDate() + 1);
-                    }
-                    newTime = morningTime;
-                }
-                
-                const delayHours = (newTime - currentTime) / (1000 * 60 * 60);
-                console.log(`[SCHEDULER] Updating post #${post.position} from ${formatPakistanTime(post.scheduledTime)} to ${formatPakistanTime(newTime)} (${delayHours.toFixed(2)}h delay)`);
-                
-                const token = await getDriveToken();
-                const updatedData = { ...post.data, scheduledTime: newTime.toISOString() };
-                const fileContent = JSON.stringify(updatedData, null, 2);
-                const tempFile = path.join(TEMP_DIR, `update_${Date.now()}.json`);
-                fs.writeFileSync(tempFile, fileContent);
-                
-                const formData = new FormData();
-                formData.append('metadata', JSON.stringify({ name: post.id }), { contentType: 'application/json' });
-                formData.append('file', fs.createReadStream(tempFile));
-                
-                await axios.patch(`${FILE_URL}/${post.id}?uploadType=multipart`, formData, {
-                    headers: {
-                        'Authorization': `Bearer ${token}`,
-                        ...formData.getHeaders()
-                    }
-                });
-                
-                fs.unlinkSync(tempFile);
-                currentTime = newTime;
-            }
-        }
-        
-        // Schedule next check
-        const nextPosts = await loadPendingPosts();
-        if (nextPosts.length > 0) {
-            const nextDelay = Math.max(0, nextPosts[0].scheduledTime - now);
-            if (nextDelay === 0) {
-                setImmediate(processQueue);
-            } else {
-                scheduledTask = setTimeout(processQueue, nextDelay);
-            }
-        } else {
-            scheduledTask = null;
-        }
     } else {
-        console.log(`[SCHEDULER] ❌ Failed to send post #${nextPost.position}, retrying in 5 minutes`);
-        scheduledTask = setTimeout(processQueue, 5 * 60 * 1000);
+        console.log(`[SCHEDULER] ❌ Failed to send post #${nextPost.position}`);
     }
+    
+    // Remove from processing set
+    processingPosts.delete(nextPost.id);
+    
+    // Continue processing next posts
+    setImmediate(processQueue);
 }
 
 async function forceSendNextPost() {
@@ -595,7 +553,10 @@ async function forceSendNextPost() {
     const nextPost = posts[0];
     console.log(`[SCHEDULER] 🚀 Force sending post #${nextPost.position} immediately!`);
     
-    const success = await sendPost(nextPost.data);
+    // Mark as processing
+    processingPosts.add(nextPost.id);
+    
+    const success = await sendPost(nextPost.data, nextPost.id);
     
     if (success) {
         if (nextPost.data.mediaFileId) {
@@ -606,7 +567,9 @@ async function forceSendNextPost() {
         lastSendTime = getPakistanTime();
         await saveScheduleToDrive();
         
-        // Update remaining posts
+        console.log(`[SCHEDULER] ✅ Post #${nextPost.position} sent successfully`);
+        
+        // Update remaining posts' schedules
         const remainingPosts = await loadPendingPosts();
         if (remainingPosts.length > 0) {
             let currentTime = lastSendTime;
@@ -624,6 +587,8 @@ async function forceSendNextPost() {
                     newTime = morningTime;
                 }
                 
+                console.log(`[SCHEDULER] Updating post #${post.position} to ${formatPakistanTime(newTime)}`);
+                
                 const token = await getDriveToken();
                 const updatedData = { ...post.data, scheduledTime: newTime.toISOString() };
                 const fileContent = JSON.stringify(updatedData, null, 2);
@@ -646,8 +611,10 @@ async function forceSendNextPost() {
             }
         }
         
+        processingPosts.delete(nextPost.id);
         return { success: true, message: `Post #${nextPost.position} sent successfully` };
     } else {
+        processingPosts.delete(nextPost.id);
         return { success: false, message: "Failed to send post" };
     }
 }
@@ -658,22 +625,21 @@ async function queuePost(messageData, uniqueId) {
     
     let scheduledTime;
     let mediaFileId = null;
-    let mediaBuffer = null;
     
     // Save media to Drive first if it's a media message
     if (messageData.type === 'media' && messageData.buffer && messageData.buffer.length > 0) {
-        // IMPORTANT: Store the buffer before saving to Drive
-        mediaBuffer = messageData.buffer;
-        
         const ext = messageData.mediaType === 'photo' ? 'jpg' : 
                     messageData.mediaType === 'video' ? 'mp4' : 'bin';
-        mediaFileId = await saveMediaToDrive(mediaBuffer, messageData.mimeType, ext);
+        mediaFileId = await saveMediaToDrive(messageData.buffer, messageData.mimeType, ext);
         console.log(`[SCHEDULER] Media saved with ID: ${mediaFileId}`);
+        
+        // Remove buffer from messageData before saving to Drive (it will be reloaded later)
+        delete messageData.buffer;
     }
     
     if (posts.length === 0 && !lastSendTime) {
         scheduledTime = getPakistanTime();
-        console.log(`[SCHEDULER] First post #${position} - sending immediately at ${formatPakistanTime(scheduledTime)}`);
+        console.log(`[SCHEDULER] First post #${position} - will send immediately after saving`);
     } else {
         let lastTime;
         if (posts.length > 0) {
@@ -704,52 +670,59 @@ async function queuePost(messageData, uniqueId) {
         console.log(`[SCHEDULER] Scheduling post #${position} for: ${formatPakistanTime(scheduledTime)} (${delayHours.toFixed(2)}h delay)`);
     }
     
-    // IMPORTANT: Keep the buffer in messageData for immediate send if needed
-    if (messageData.type === 'media' && mediaBuffer) {
-        messageData.buffer = mediaBuffer;
-    }
+    // Save post metadata to Drive
+    const postId = await savePostToDrive(messageData, uniqueId, scheduledTime, position, mediaFileId);
     
-    await savePostToDrive(messageData, uniqueId, scheduledTime, position, mediaFileId);
-    
-    // If this is an immediate post, send it now
+    // Now load the post back (which will load the media if needed) and send if immediate
     const now = getPakistanTime();
     if (scheduledTime <= now) {
-        console.log(`[SCHEDULER] Post is immediate, sending now...`);
-        const success = await sendPost({
-            ...messageData,
-            position: position,
-            buffer: messageData.buffer,
-            mediaFileId: mediaFileId
-        });
+        console.log(`[SCHEDULER] Post #${position} is immediate, loading and sending...`);
         
-        if (success) {
-            if (mediaFileId) {
-                await deleteMediaFromDrive(mediaFileId);
+        // Load the post we just saved
+        const loadedPost = await loadPostFromDrive(postId);
+        
+        if (loadedPost) {
+            // Mark as processing
+            processingPosts.add(postId);
+            
+            const success = await sendPost(loadedPost, postId);
+            
+            if (success) {
+                if (loadedPost.mediaFileId) {
+                    await deleteMediaFromDrive(loadedPost.mediaFileId);
+                }
+                await deletePostFromDrive(postId);
+                lastSendTime = now;
+                await saveScheduleToDrive();
+                console.log(`[SCHEDULER] ✅ Immediate post #${position} sent successfully`);
+                processingPosts.delete(postId);
+                return { scheduledTime, position, sent: true };
+            } else {
+                console.log(`[SCHEDULER] ❌ Failed to send immediate post #${position}, will retry via scheduler`);
+                processingPosts.delete(postId);
             }
-            await deletePostFromDrive(await savePostToDrive(messageData, uniqueId, scheduledTime, position, mediaFileId));
-            lastSendTime = now;
-            await saveScheduleToDrive();
-            console.log(`[SCHEDULER] ✅ Immediate post #${position} sent successfully`);
-            return { scheduledTime, position, sent: true };
-        } else {
-            console.log(`[SCHEDULER] ❌ Failed to send immediate post, will retry via scheduler`);
         }
     }
     
+    // Start scheduler if not running
     if (!scheduledTask) {
-        const delay = Math.max(0, scheduledTime - now);
-        console.log(`[SCHEDULER] Starting scheduler, first check in ${Math.floor(delay / 1000 / 60)} minutes`);
-        if (delay > 0) {
-            scheduledTask = setTimeout(processQueue, delay);
-        } else {
-            processQueue();
+        const now = getPakistanTime();
+        const nextPosts = await loadPendingPosts();
+        if (nextPosts.length > 0) {
+            const delay = Math.max(0, nextPosts[0].scheduledTime - now);
+            console.log(`[SCHEDULER] Starting scheduler, first check in ${Math.floor(delay / 1000 / 60)} minutes`);
+            if (delay > 0) {
+                scheduledTask = setTimeout(processQueue, delay);
+            } else {
+                processQueue();
+            }
         }
     }
     
     return { scheduledTime, position, sent: false };
 }
 
-// ===== FORWARDING FUNCTIONS (SAME AS BEFORE) =====
+// ===== FORMATTING FUNCTIONS =====
 async function generateThumbnail(buffer) {
     try {
         const thumbnail = await sharp(buffer)
@@ -1155,7 +1128,7 @@ function initTelegramBot() {
     console.log(`📁 Media Folder ID: ${MEDIA_FOLDER_ID}`);
     console.log(`⏰ Random delay: ${MIN_DELAY_HOURS}-${MAX_DELAY_HOURS} hours between ALL DESTINATIONS posts`);
     console.log(`🌙 Night pause: ${NIGHT_START_HOUR}:00 - ${NIGHT_END_HOUR}:00 PKT`);
-    console.log(`⏱️ Missed post window: ${MISSED_POST_WINDOW_MS / 1000 / 60} minutes (older posts are deleted)`);
+    console.log(`⏱️ Missed post window: ${MISSED_POST_WINDOW_MS / 1000 / 60} minutes`);
     console.log(`🕐 Current PKT: ${formatPakistanTime()}\n`);
     
     telegrafBot.command('start', (ctx) => {
@@ -1169,10 +1142,6 @@ function initTelegramBot() {
             `• 📱 *Own Chat* - Send only to your WhatsApp\n` +
             `• 🌟 *ALL* - ⏰ **SCHEDULED** - Random ${MIN_DELAY_HOURS}-${MAX_DELAY_HOURS} hour delay between posts\n` +
             `• ❌ *Cancel* - Don't forward\n\n` +
-            `*Schedule Info:*\n` +
-            `• Random delay: ${MIN_DELAY_HOURS}-${MAX_DELAY_HOURS} hours between posts\n` +
-            `• Night pause: ${NIGHT_START_HOUR}:00 - ${NIGHT_END_HOUR}:00 PKT\n` +
-            `• Missed posts within last ${MISSED_POST_WINDOW_MS / 1000 / 60} minutes are sent; older posts are deleted\n\n` +
             `*Commands:*\n` +
             `• /queue - Check queue status\n` +
             `• /time - Show current Pakistan time\n` +
@@ -1504,7 +1473,7 @@ async function startBot() {
             console.log(`📺 WhatsApp Channel: ${WHATSAPP_CHANNEL}`);
             console.log(`⏰ Random delay: ${MIN_DELAY_HOURS}-${MAX_DELAY_HOURS} hours between ALL DESTINATIONS posts`);
             console.log(`🌙 Night pause: ${NIGHT_START_HOUR}:00 - ${NIGHT_END_HOUR}:00 PKT`);
-            console.log(`⏱️ Missed post window: ${MISSED_POST_WINDOW_MS / 1000 / 60} minutes (older posts are deleted)`);
+            console.log(`⏱️ Missed post window: ${MISSED_POST_WINDOW_MS / 1000 / 60} minutes`);
             console.log(`🕐 Current PKT: ${formatPakistanTime()}\n`);
             
             if (!isTelegramActive) {
@@ -1547,7 +1516,7 @@ async function startBot() {
                 `🌐 Telegram Channel\n` +
                 `👥 ${WHATSAPP_GROUPS.length} Groups\n` +
                 `📱 Own Chat\n` +
-                `⏰🌟 SCHEDULED ALL (Random ${MIN_DELAY_HOURS}-${MAX_DELAY_HOURS}h delay, auto-recovery on restart)`;
+                `⏰🌟 SCHEDULED ALL (Random ${MIN_DELAY_HOURS}-${MAX_DELAY_HOURS}h delay)`;
             await sock.sendMessage(from, { text: helpText });
         }
     });
