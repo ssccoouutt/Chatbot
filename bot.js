@@ -8,6 +8,7 @@ const pino = require("pino");
 const { Boom } = require("@hapi/boom");
 const qrcode = require("qrcode-terminal");
 const path = require("path");
+const fs = require('fs');  // ADD THIS LINE
 
 // Import utilities
 const forwarder = require('./Utility/forwarder');
