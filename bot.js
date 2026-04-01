@@ -21,7 +21,7 @@ const TEMP_DIR = path.join(process.cwd(), 'temp');
 if (!fs.existsSync(TEMP_DIR)) fs.mkdirSync(TEMP_DIR, { recursive: true });
 
 // ===== MESSAGE PROCESSING =====
-const processedMessages = new Set(); // Prevent duplicate processing
+const processedMessages = new Set();
 
 // Clean processed messages every 5 minutes
 setInterval(() => {
@@ -37,10 +37,13 @@ async function startBot() {
     
     const sock = makeWASocket({
         version,
-        logger: pino({ level: "silent" }), // Silent to avoid noise
+        logger: pino({ level: "silent" }),
         auth: state,
         printQRInTerminal: false,
-        browser: ['WhatsApp Bot', 'Chrome', '1.0.0']
+        browser: ['WhatsApp Bot', 'Chrome', '1.0.0'],
+        // Important: Ensure we receive all messages
+        syncFullHistory: false,
+        markOnlineOnConnect: true
     });
 
     // ===== CONNECTION HANDLER =====
@@ -66,6 +69,17 @@ async function startBot() {
             console.log(`🤖 Bot is ready! Listening for messages...\n`);
             console.log(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n`);
             
+            // Send a test message to yourself to verify connection
+            setTimeout(async () => {
+                try {
+                    const testJid = `${sock.user?.id?.split(':')[0]}@s.whatsapp.net`;
+                    await sock.sendMessage(testJid, { text: '✅ Bot is online and working! Send a message to test.' });
+                    console.log(`📤 Test message sent to your WhatsApp number\n`);
+                } catch (err) {
+                    console.log(`⚠️ Could not send test message: ${err.message}\n`);
+                }
+            }, 2000);
+            
             // Start Telegram bot and scheduler
             forwarder.init(sock, null);
             forwarder.start();
@@ -75,10 +89,27 @@ async function startBot() {
     // ===== CREDENTIALS HANDLER =====
     sock.ev.on("creds.update", saveCreds);
 
-    // ===== MESSAGE HANDLER - GET ALL MESSAGES =====
+    // ===== DIAGNOSTIC: Log ALL events to see if anything is happening =====
     sock.ev.on("messages.upsert", async ({ messages, type }) => {
+        console.log(`\n🔔 MESSAGES EVENT TRIGGERED!`);
+        console.log(`   Type: ${type}`);
+        console.log(`   Messages count: ${messages?.length}`);
+        
+        for (const msg of messages) {
+            console.log(`   Message ID: ${msg.key?.id}`);
+            console.log(`   From: ${msg.key?.remoteJid}`);
+            console.log(`   From me: ${msg.key?.fromMe}`);
+            if (msg.message) {
+                console.log(`   Message keys: ${Object.keys(msg.message).join(', ')}`);
+            }
+        }
+        console.log(`\n`);
+        
         // Only process new messages (not history)
-        if (type !== 'notify') return;
+        if (type !== 'notify') {
+            console.log(`⏭️ Skipping - not a new message (type: ${type})\n`);
+            return;
+        }
         
         for (const msg of messages) {
             // Skip if no message content
@@ -87,7 +118,10 @@ async function startBot() {
             const msgId = msg.key.id;
             
             // Skip already processed messages
-            if (processedMessages.has(msgId)) continue;
+            if (processedMessages.has(msgId)) {
+                console.log(`⏭️ Skipping duplicate: ${msgId}\n`);
+                continue;
+            }
             
             // Mark as processed
             processedMessages.add(msgId);
@@ -104,7 +138,10 @@ async function startBot() {
             if (isChannel) chatType = 'CHANNEL';
             
             // Skip messages from self
-            if (isFromMe) continue;
+            if (isFromMe) {
+                console.log(`⏭️ Skipping - message from self\n`);
+                continue;
+            }
             
             // Extract message text
             let text = '';
@@ -140,7 +177,7 @@ async function startBot() {
                 sender = msg.key.participant.split('@')[0];
             }
             
-            // CLEAN OUTPUT - ONLY SHOW MESSAGES
+            // CLEAN OUTPUT - SHOW MESSAGE
             console.log(`\n📨 [${chatType}] ${sender}: ${text || `[${messageType}]`}`);
             
             // ===== AUTO-REPLY FOR PRIVATE CHATS =====
@@ -153,27 +190,38 @@ async function startBot() {
                     console.log(`❌ Failed to send reply: ${err.message}\n`);
                 }
             }
-            
-            // ===== FORWARDING FOR GROUPS/CHANNELS (if configured) =====
-            // This will be handled by forwarder.js when needed
-            
         }
+    });
+    
+    // ===== ADD A RAW EVENT LISTENER TO SEE IF ANY DATA ARRIVES =====
+    sock.ev.on("messaging-history.set", (data) => {
+        console.log(`\n📚 MESSAGING HISTORY SET`);
+        console.log(`   Messages: ${data.messages?.length}`);
+        console.log(`   Contacts: ${data.contacts?.length}`);
+        console.log(`   Chats: ${data.chats?.length}\n`);
     });
     
     // ===== GROUP PARTICIPANT UPDATES =====
     sock.ev.on("group-participants.update", (update) => {
-        const { id, participants, action } = update;
-        console.log(`\n👥 GROUP UPDATE: ${action} in ${id}`);
-        console.log(`   Participants: ${participants.join(', ')}\n`);
+        console.log(`\n👥 GROUP UPDATE: ${update.action} in ${update.id}`);
+        console.log(`   Participants: ${update.participants?.join(', ') || 'none'}\n`);
+    });
+    
+    // ===== PRESENCE UPDATES =====
+    sock.ev.on("presence.update", (update) => {
+        // Don't log presence to avoid spam
+        // console.log(`👤 Presence: ${update.id} is ${update.presences}`);
     });
     
     // ===== ERROR HANDLER =====
     sock.ev.on("error", (error) => {
-        // Suppress common connection errors
         const statusCode = error?.output?.statusCode;
         if (statusCode === 515 || statusCode === 503 || statusCode === 408) return;
         console.error(`⚠️ Error:`, error.message);
     });
+    
+    // Log that we're ready
+    console.log(`✅ Event handlers registered. Waiting for messages...\n`);
     
     return sock;
 }
