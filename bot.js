@@ -38,8 +38,8 @@ const MEDIA_FOLDER_ID = "1pll1-8s83ZUna1K9lL_miFkYsiEvxh-z";
 const SCHEDULE_FILE_ID = "1tzY2CysClbADcj1zEgLwfzzRAFYOr6Wu"; // HARDCODED
 
 // ===== SCHEDULE CONFIGURATION =====
-const MIN_DELAY_HOURS = 3;
-const MAX_DELAY_HOURS = 4;
+const MIN_DELAY_HOURS = 2;  // Changed from 3 to 2
+const MAX_DELAY_HOURS = 3;  // Changed from 4 to 3
 const NIGHT_START_HOUR = 22;
 const NIGHT_END_HOUR = 4;
 const MISSED_POST_WINDOW_MS = 15 * 60 * 1000;
@@ -891,7 +891,8 @@ function initTelegramBot() {
             `• 🌐 *Telegram Channel* - Send to Telegram channel\n` +
             `• 👥 *ALL GROUPS* - Send to ${WHATSAPP_GROUPS.length} groups\n` +
             `• 📱 *Own Chat* - Send only to your WhatsApp\n` +
-            `• 🌟 *ALL DESTINATIONS* - ⏰ **SCHEDULED** (${MIN_DELAY_HOURS}-${MAX_DELAY_HOURS}h delay to all)\n` +
+            `• ⏰ *SCHEDULE TO ALL* - Send to ALL destinations with ${MIN_DELAY_HOURS}-${MAX_DELAY_HOURS}h delay\n` +
+            `• 🚀 *SEND NOW TO ALL* - Send immediately to ALL destinations\n` +
             `• ❌ *Cancel*\n\n` +
             `*Commands:*\n` +
             `• /queue - Check queue status\n` +
@@ -957,7 +958,8 @@ function initTelegramBot() {
                         [{ text: `🌐 Telegram Channel`, callback_data: `${uniqueId}_telegram` }],
                         [{ text: `👥 ALL GROUPS (${WHATSAPP_GROUPS.length})`, callback_data: `${uniqueId}_groups` }],
                         [{ text: `📱 Own Chat`, callback_data: `${uniqueId}_own` }],
-                        [{ text: `🌟 ALL DESTINATIONS (${MIN_DELAY_HOURS}-${MAX_DELAY_HOURS}h)`, callback_data: `${uniqueId}_all` }],
+                        [{ text: `⏰ SCHEDULE TO ALL (${MIN_DELAY_HOURS}-${MAX_DELAY_HOURS}h)`, callback_data: `${uniqueId}_schedule` }],
+                        [{ text: `🚀 SEND NOW TO ALL`, callback_data: `${uniqueId}_sendnow` }],
                         [{ text: `❌ Cancel`, callback_data: `${uniqueId}_cancel` }]
                     ]
                 }
@@ -998,7 +1000,8 @@ function initTelegramBot() {
                             [{ text: `🌐 Telegram Channel`, callback_data: `${uniqueId}_telegram` }],
                             [{ text: `👥 ALL GROUPS (${WHATSAPP_GROUPS.length})`, callback_data: `${uniqueId}_groups` }],
                             [{ text: `📱 Own Chat`, callback_data: `${uniqueId}_own` }],
-                            [{ text: `🌟 ALL DESTINATIONS (${MIN_DELAY_HOURS}-${MAX_DELAY_HOURS}h)`, callback_data: `${uniqueId}_all` }],
+                            [{ text: `⏰ SCHEDULE TO ALL (${MIN_DELAY_HOURS}-${MAX_DELAY_HOURS}h)`, callback_data: `${uniqueId}_schedule` }],
+                            [{ text: `🚀 SEND NOW TO ALL`, callback_data: `${uniqueId}_sendnow` }],
                             [{ text: `❌ Cancel`, callback_data: `${uniqueId}_cancel` }]
                         ]
                     }
@@ -1043,7 +1046,8 @@ function initTelegramBot() {
                             [{ text: `🌐 Telegram Channel`, callback_data: `${uniqueId}_telegram` }],
                             [{ text: `👥 ALL GROUPS (${WHATSAPP_GROUPS.length})`, callback_data: `${uniqueId}_groups` }],
                             [{ text: `📱 Own Chat`, callback_data: `${uniqueId}_own` }],
-                            [{ text: `🌟 ALL DESTINATIONS (${MIN_DELAY_HOURS}-${MAX_DELAY_HOURS}h)`, callback_data: `${uniqueId}_all` }],
+                            [{ text: `⏰ SCHEDULE TO ALL (${MIN_DELAY_HOURS}-${MAX_DELAY_HOURS}h)`, callback_data: `${uniqueId}_schedule` }],
+                            [{ text: `🚀 SEND NOW TO ALL`, callback_data: `${uniqueId}_sendnow` }],
                             [{ text: `❌ Cancel`, callback_data: `${uniqueId}_cancel` }]
                         ]
                     }
@@ -1078,8 +1082,8 @@ function initTelegramBot() {
             return;
         }
         
-        // For scheduled posts (ALL DESTINATIONS)
-        if (target === 'all') {
+        // For scheduled posts (SCHEDULE TO ALL)
+        if (target === 'schedule') {
             await ctx.answerCbQuery('⏰ Scheduling post...');
             await ctx.editMessageText('⏰ *Post is being scheduled...*\n\nIt will be sent to ALL destinations at the scheduled time.', { parse_mode: 'Markdown' });
             
@@ -1094,6 +1098,22 @@ function initTelegramBot() {
                 console.error('Background processing error:', err);
                 ctx.telegram.sendMessage(ctx.chat.id, '❌ Failed to schedule post.');
             });
+            return;
+        }
+        
+        // For send now to all (immediate)
+        if (target === 'sendnow') {
+            await ctx.answerCbQuery('🚀 Sending post now...');
+            await ctx.editMessageText('🚀 *Sending post to ALL destinations...*\n\nPlease wait.', { parse_mode: 'Markdown' });
+            
+            // Send immediately
+            const success = await sendToAllDestinations(messageData);
+            
+            if (success) {
+                await ctx.telegram.sendMessage(ctx.chat.id, '✅ *Post sent immediately to ALL destinations!*', { parse_mode: 'Markdown' });
+            } else {
+                await ctx.telegram.sendMessage(ctx.chat.id, '❌ Failed to send post to ALL destinations.', { parse_mode: 'Markdown' });
+            }
             return;
         }
         
